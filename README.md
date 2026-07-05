@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/flowa1911you/xemu/releases"><b>⬇ DOWNLOAD (Releases)</b></a>
+  <a href="https://github.com/flowa1911you/xemu-sinden-lightgun/releases"><b>⬇ DOWNLOAD (Releases)</b></a>
   &nbsp;·&nbsp;
   <a href="https://www.youtube.com/@flowachannel4731"><b>📺 YouTube channel</b></a>
 </p>
@@ -43,7 +43,7 @@
 
 ## Quick start
 
-1. Download the latest zip from [Releases](https://github.com/flowa1911you/xemu/releases) and extract it anywhere
+1. Download the latest zip from [Releases](https://github.com/flowa1911you/xemu-sinden-lightgun/releases) and extract it anywhere
 2. Drop your files into the folders (each one contains a readme):
    - `bios\` — Xbox flash BIOS image
    - `mcpxbootrom\` — MCPX boot ROM
@@ -67,8 +67,8 @@
 
 ## Source code
 
-All modifications live in the [`flowa-lightgun`](https://github.com/flowa1911you/xemu/tree/flowa-lightgun)
-branch ([full diff vs upstream](https://github.com/flowa1911you/xemu/compare/master...flowa-lightgun)).
+All modifications live in the [`flowa-lightgun`](https://github.com/flowa1911you/xemu-sinden-lightgun/tree/flowa-lightgun)
+branch ([full diff vs upstream](https://github.com/flowa1911you/xemu-sinden-lightgun/compare/master...flowa-lightgun)).
 Build like regular xemu (MSYS2 UCRT64 on Windows: `./build.sh`). The
 configurator compiles with the C# compiler bundled with Windows.
 

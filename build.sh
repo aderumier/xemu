@@ -9,8 +9,20 @@ project_source_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd
 target_arch=$(uname -m)
 
 package_windows() {
+    # Preserve user data (machine files, config, configurator) across rebuilds
+    rm -rf dist-keep
+    mkdir -p dist-keep
+    for keep in bios mcpxbootrom harddisk eeprom flowa_config.ini FlowaGunSetup.exe 8bit_sinden___red_Ezt_icon.ico; do
+        if test -e "dist/$keep"; then
+            mv "dist/$keep" dist-keep/
+        fi
+    done
     rm -rf dist
     mkdir -p dist
+    if test -n "$(ls -A dist-keep 2>/dev/null)"; then
+        mv dist-keep/* dist/
+    fi
+    rm -rf dist-keep
     cp build/qemu-system-i386w.exe dist/xemu.exe
     python3 "${project_source_dir}/get_deps.py" dist/xemu.exe dist
 }

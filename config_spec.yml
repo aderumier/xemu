@@ -55,6 +55,21 @@ input:
   auto_bind:
     type: bool
     default: true
+  # Keep mouse clicks away from UI shortcuts while using a mouse/lightgun
+  disable_dblclick_fullscreen:
+    type: bool
+    default: true
+  disable_rclick_menu:
+    type: bool
+    default: true
+  # Lightgun aim feel: smoothing tames hand/camera jitter (0 = raw),
+  # sensitivity scales aim range around the screen center (1.0 = 1:1)
+  lightgun_smoothing:
+    type: number
+    default: 0.2
+  lightgun_sensitivity:
+    type: number
+    default: 1.0
   # Deprecated: use 'enable_rumble' on the controller mapping settings instead
   allow_vibration:
     type: bool

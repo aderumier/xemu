@@ -21,7 +21,9 @@ subdir('thirdparty')
 
 xemu_ss = ss.source_set()
 xemu_ss.add(files(
+  'flowa-config.c',
   'xemu-input.c',
+  'xemu-rawinput.c',
   'xemu-monitor.c',
   'xemu-net.c',
   'xemu-settings.cc',

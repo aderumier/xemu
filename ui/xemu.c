@@ -43,6 +43,7 @@
 #include "system/runstate-action.h"
 #include "system/system.h"
 #include "xui/xemu-hud.h"
+#include "flowa-config.h"
 #include "xemu-input.h"
 #include "xemu-settings.h"
 #include "xemu-snapshots.h"
@@ -1340,6 +1341,9 @@ int main(int argc, char **argv)
 #endif
 
     display_very_early_init(NULL);
+
+    // Apply flowas_config.ini overrides (generated on first launch)
+    flowa_config_load();
 
     qemu_sem_init(&display_init_sem, 0);
     qemu_sem_init(&display_shutdown_sem, 0);

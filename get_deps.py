@@ -40,11 +40,17 @@ def main():
 
 		# ldd on msys gives Unix-style paths, but mingw Python wants them Windows-style
 		# Use cygpath to convert the paths, because both mingw and msys Python can handle them
-		# Force lookup against /mingw64/bin to avoid external DLLs
-		dll_path = '/mingw64/bin/' + dll_name
+		# Force lookup against the active MSYS2 environment's bin dir to avoid external DLLs
+		msystem_prefix = {
+			'MINGW64': '/mingw64',
+			'UCRT64': '/ucrt64',
+			'CLANG64': '/clang64',
+			'MINGW32': '/mingw32',
+		}.get(os.environ.get('MSYSTEM', ''), '/mingw64')
+		dll_path = msystem_prefix + '/bin/' + dll_name
 		dll_path = subprocess.check_output(['cygpath', '-w', dll_path]).decode('utf-8').strip()
 		if not os.path.exists(dll_path):
-			print('Skipping DLL outside /mingw64/bin: %s' % original_dll_path)
+			print('Skipping DLL outside %s/bin: %s' % (msystem_prefix, original_dll_path))
 			continue
 
 		dest_path = os.path.join(args.dest, dll_name)

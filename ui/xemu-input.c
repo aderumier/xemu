@@ -29,6 +29,7 @@
 #include "qemu/config-file.h"
 
 #include "xemu-input.h"
+#include "xemu-input-evdev-gun.h"
 #include "xemu-notifications.h"
 #include "xemu-settings.h"
 #include <stdio.h>
@@ -514,6 +515,10 @@ void xemu_input_update_controller(ControllerState *state)
 
 void xemu_input_update_controllers(void)
 {
+    if (xemu_input_lightgun_active()) {
+        xemu_input_evdev_gun_poll();
+    }
+
     ControllerState *iter;
     QTAILQ_FOREACH (iter, &available_controllers, entry) {
         xemu_input_update_controller(iter);
@@ -536,7 +541,41 @@ void xemu_input_update_sdl_kbd_controller_state(ControllerState *state)
         return;
 
     const char *bound_driver = get_bound_driver(state->bound);
-    if (strcmp(bound_driver, DRIVER_LIGHT_GUN) == 0) {
+    if (strcmp(bound_driver, DRIVER_LIGHT_GUN) == 0 &&
+        xemu_input_evdev_gun_available()) {
+        // Aim comes straight from the evdev device (ID_INPUT_GUN in
+        // priority); the SDL pointer is bypassed entirely.
+        float gx, gy;
+        if (xemu_input_evdev_gun_get_pos(0, &gx, &gy)) {
+            int32_t x = (int32_t)((gx - 0.5f) * 65535.0f);
+            int32_t y = (int32_t)((0.5f - gy) * 65535.0f);
+            state->lg.axis[0] = (int16_t)MIN(MAX(x, -32768), 32767);
+            state->lg.axis[1] = (int16_t)MIN(MAX(y, -32768), 32767);
+            state->lg.status = 0x20; // Light Visible
+        } else {
+            state->lg.status = 0x00;
+        }
+
+        uint32_t gunBtn = xemu_input_evdev_gun_get_buttons(0);
+        if (gunBtn & EVDEV_GUN_BTN_TRIGGER)
+            state->lg.buttons |= CONTROLLER_BUTTON_A;
+        if (gunBtn & EVDEV_GUN_BTN_RELOAD)
+            state->lg.buttons |= CONTROLLER_BUTTON_B;
+        if (gunBtn & EVDEV_GUN_BTN_AUX)
+            state->lg.buttons |= CONTROLLER_BUTTON_START;
+        if (gunBtn & EVDEV_GUN_BTN_1)
+            state->lg.buttons |= CONTROLLER_BUTTON_BACK;
+
+        if (kbd[g_config.input.keyboard_controller_scancode_map.a])
+            state->lg.buttons |= CONTROLLER_BUTTON_A;
+        if (kbd[g_config.input.keyboard_controller_scancode_map.b])
+            state->lg.buttons |= CONTROLLER_BUTTON_B;
+        if (kbd[g_config.input.keyboard_controller_scancode_map.start])
+            state->lg.buttons |= CONTROLLER_BUTTON_START;
+        if (kbd[g_config.input.keyboard_controller_scancode_map.back])
+            state->lg.buttons |= CONTROLLER_BUTTON_BACK;
+
+    } else if (strcmp(bound_driver, DRIVER_LIGHT_GUN) == 0) {
         uint32_t mouseBtn = SDL_GetMouseState(&m_mouseX, &m_mouseY);
 
         int32_t windowWidth, windowHeight;

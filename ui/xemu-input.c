@@ -517,8 +517,15 @@ void xemu_input_update_controller(ControllerState *state)
 static void xemu_input_update_jvs_player(ChihiroJVSState *jvs, int player,
                                          bool offscreen, bool trigger,
                                          bool reload, bool start,
-                                         bool service, float gx, float gy)
+                                         bool service, bool coin,
+                                         float gx, float gy)
 {
+    static bool coin_prev[JVS_MAX_PLAYERS];
+    if (coin && !coin_prev[player]) {
+        jvs->coin_count[player]++;
+    }
+    coin_prev[player] = coin;
+
     if (offscreen) {
         jvs->analog[player * 2 + 0] = 0;
         jvs->analog[player * 2 + 1] = 0;
@@ -564,8 +571,11 @@ static void xemu_input_update_jvs_lightgun(void)
                           (p == 0 && kbd[SDL_SCANCODE_R]);
             bool start = (gunBtn & EVDEV_GUN_BTN_AUX) != 0 ||
                          (p == 0 && p1_start);
+            bool coin = (gunBtn & EVDEV_GUN_BTN_1) != 0 ||
+                        (p == 0 && kbd[SDL_SCANCODE_5]);
             xemu_input_update_jvs_player(jvs, p, offscreen, trigger, reload,
-                                         start, p == 0 && p1_service, gx, gy);
+                                         start, p == 0 && p1_service, coin,
+                                         gx, gy);
         }
     } else {
         float mx, my;
@@ -589,20 +599,18 @@ static void xemu_input_update_jvs_lightgun(void)
         bool trigger = (mouseBtn & SDL_BUTTON_MASK(SDL_BUTTON_LEFT)) != 0;
         bool reload  = (mouseBtn & SDL_BUTTON_MASK(SDL_BUTTON_RIGHT)) != 0 ||
                        kbd[SDL_SCANCODE_R];
+        bool start = (mouseBtn & SDL_BUTTON_MASK(SDL_BUTTON_MIDDLE)) != 0 ||
+                     p1_start;
+        bool coin = (mouseBtn & SDL_BUTTON_MASK(SDL_BUTTON_X1)) != 0 ||
+                    kbd[SDL_SCANCODE_5];
 
         xemu_input_update_jvs_player(jvs, 0, offscreen, trigger, reload,
-                                     p1_start, p1_service,
+                                     start, p1_service, coin,
                                      winW > 0 ? mx / winW : 0,
                                      winH > 0 ? my / winH : 0);
     }
 
     jvs->system_switches = kbd[SDL_SCANCODE_F2] ? 0x80 : 0x00;
-
-    static bool coin_prev;
-    bool coin_key = kbd[SDL_SCANCODE_5];
-    if (coin_key && !coin_prev)
-        jvs->coin_count[0]++;
-    coin_prev = coin_key;
 }
 
 void xemu_input_update_controllers(void)
@@ -1234,6 +1242,12 @@ void xemu_input_reset_input_mapping(ControllerState *state)
 
 int xemu_input_lightgun_active(void)
 {
+    /* Chihiro JVS gun games use the pointer as a light gun, too:
+     * keep right-click reload from opening the xemu menu */
+    if (chihiro_jvs_global) {
+        return 1;
+    }
+
     for (int i = 0; i < 4; i++) {
         if (bound_drivers[i] &&
             strcmp(bound_drivers[i], DRIVER_LIGHT_GUN) == 0) {

@@ -35,7 +35,21 @@ jobs:
         # Pull everything listed in debian/control Build-Depends
         sudo apt-get -qy build-dep .
         # libudev-dev enables evdev light gun support (not yet in debian/control)
-        sudo apt-get -qy install ccache libudev-dev
+        sudo apt-get -qy install ccache libudev-dev flex bison
+    - name: Build static libpcap
+      # Link libpcap statically so the binary runs on distros whose
+      # libpcap soname differs from Debian's libpcap.so.0.8 (e.g.
+      # Batocera ships libpcap.so.1). Built without dbus/libnl/usb so
+      # the static lib pulls in no extra dependencies. Installed to
+      # /usr/local, which pkg-config searches before the system dirs.
+      run: |
+        curl -sL https://www.tcpdump.org/release/libpcap-1.10.5.tar.gz | tar xz -C /tmp
+        cd /tmp/libpcap-1.10.5
+        ./configure --prefix=/usr/local --disable-shared --enable-static \
+          --disable-dbus --disable-bluetooth --disable-rdma --disable-usb \
+          --without-libnl
+        make -j$(nproc)
+        sudo make install
     - name: Compile
       run: |
         export PATH="/usr/lib/ccache:$PATH"
@@ -46,6 +60,14 @@ jobs:
       run: |
         nm build/qemu-system-i386 | grep -q xemu_input_evdev_gun_poll
         echo "evdev light gun support: OK"
+    - name: Verify libpcap is linked statically
+      run: |
+        if ldd build/qemu-system-i386 | grep libpcap; then
+          echo "ERROR: binary still depends on shared libpcap" >&2
+          exit 1
+        fi
+        echo "no shared libpcap dependency: OK"
+        ldd build/qemu-system-i386
     - name: Upload build artifact
       uses: actions/upload-artifact@v4
       with:

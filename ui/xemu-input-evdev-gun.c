@@ -73,8 +73,12 @@ static uint32_t button_mask_for_code(uint16_t code)
     case BTN_RIGHT:  return EVDEV_GUN_BTN_RELOAD;
     case BTN_MIDDLE: return EVDEV_GUN_BTN_AUX;
     case BTN_1:      return EVDEV_GUN_BTN_1;
-    case BTN_2:      return EVDEV_GUN_BTN_2;
-    case BTN_3:      return EVDEV_GUN_BTN_3;
+    /* Mouse-style extra buttons double as BTN_2/BTN_3 (Sinden/Gun4IR
+     * side and pump buttons commonly report these) */
+    case BTN_2:
+    case BTN_SIDE:   return EVDEV_GUN_BTN_2;
+    case BTN_3:
+    case BTN_EXTRA:  return EVDEV_GUN_BTN_3;
     case BTN_4:      return EVDEV_GUN_BTN_4;
     case BTN_5:      return EVDEV_GUN_BTN_5;
     case BTN_6:      return EVDEV_GUN_BTN_6;

@@ -518,6 +518,7 @@ static void xemu_input_update_jvs_player(ChihiroJVSState *jvs, int player,
                                          bool offscreen, bool trigger,
                                          bool reload, bool start,
                                          bool service, bool coin,
+                                         bool push2, bool push3,
                                          float gx, float gy)
 {
     static bool coin_prev[JVS_MAX_PLAYERS];
@@ -537,6 +538,8 @@ static void xemu_input_update_jvs_player(ChihiroJVSState *jvs, int player,
     uint8_t sw0 = 0;
     if (trigger) sw0 |= 0x02;
     if (reload)  sw0 |= 0x01;
+    if (push2)   sw0 |= 0x04;  /* push button 2 (e.g. VC3 ES/weapon) */
+    if (push3)   sw0 |= 0x08;  /* push button 3 */
     if (start)   sw0 |= 0x80;
     if (service) sw0 |= 0x40;
     jvs->player_switches[player][0] = sw0;
@@ -578,9 +581,12 @@ static void xemu_input_update_jvs_lightgun(void)
                          (p == 0 && p1_start);
             bool coin = (gunBtn & EVDEV_GUN_BTN_1) != 0 ||
                         (p == 0 && kbd[SDL_SCANCODE_5]);
+            bool push2 = (gunBtn & EVDEV_GUN_BTN_2) != 0 ||
+                         (p == 0 && kbd[SDL_SCANCODE_E]);
+            bool push3 = (gunBtn & EVDEV_GUN_BTN_3) != 0;
             xemu_input_update_jvs_player(jvs, p, offscreen, trigger, reload,
                                          start, p == 0 && p1_service, coin,
-                                         gx, gy);
+                                         push2, push3, gx, gy);
         }
     } else {
         float mx, my;
@@ -613,9 +619,12 @@ static void xemu_input_update_jvs_lightgun(void)
                      p1_start;
         bool coin = (mouseBtn & SDL_BUTTON_MASK(SDL_BUTTON_X1)) != 0 ||
                     kbd[SDL_SCANCODE_5];
+        bool push2 = (mouseBtn & SDL_BUTTON_MASK(SDL_BUTTON_X2)) != 0 ||
+                     kbd[SDL_SCANCODE_E];
 
         xemu_input_update_jvs_player(jvs, 0, offscreen, trigger, reload,
                                      start, p1_service, coin,
+                                     push2, false,
                                      winW > 0 ? mx / winW : 0,
                                      winH > 0 ? my / winH : 0);
     }

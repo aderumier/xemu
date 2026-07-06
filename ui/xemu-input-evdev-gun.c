@@ -50,7 +50,17 @@ typedef struct EvdevGun {
     uint32_t buttons;
     bool has_touch;   /* device reports BTN_TOUCH (offscreen indicator) */
     bool touch;
+    bool rel_axes;    /* relative mouse: axes are synthetic, driven by
+                         integrating REL_X/REL_Y deltas */
 } EvdevGun;
+
+/*
+ * Virtual axis range and delta scaling for relative mice. With 8x
+ * scaling, sweeping the full virtual screen takes ~4096 mouse counts
+ * (about 10 cm of travel on a typical 1000 dpi mouse).
+ */
+#define REL_AXIS_RANGE 32767
+#define REL_DELTA_SCALE 8
 
 static EvdevGun guns[MAX_GUNS];
 static int num_guns;
@@ -90,9 +100,10 @@ static int devnode_cmp(const void *a, const void *b)
     return strcmp(x, y);
 }
 
-static bool gun_open(const char *devnode)
+static bool gun_open(const char *devnode, bool allow_relative)
 {
     unsigned long absbits[NBITS(ABS_MAX + 1)] = { 0 };
+    unsigned long relbits[NBITS(REL_MAX + 1)] = { 0 };
     unsigned long keybits[NBITS(KEY_MAX + 1)] = { 0 };
     struct input_absinfo absinfo;
     EvdevGun *gun;
@@ -108,8 +119,12 @@ static bool gun_open(const char *devnode)
         return false;
     }
 
-    if (ioctl(fd, EVIOCGBIT(EV_ABS, sizeof(absbits)), absbits) < 0 ||
-        !TEST_BIT(ABS_X, absbits) || !TEST_BIT(ABS_Y, absbits)) {
+    bool has_abs = ioctl(fd, EVIOCGBIT(EV_ABS, sizeof(absbits)), absbits) >= 0 &&
+                   TEST_BIT(ABS_X, absbits) && TEST_BIT(ABS_Y, absbits);
+    bool has_rel = ioctl(fd, EVIOCGBIT(EV_REL, sizeof(relbits)), relbits) >= 0 &&
+                   TEST_BIT(REL_X, relbits) && TEST_BIT(REL_Y, relbits);
+
+    if (!has_abs && !(allow_relative && has_rel)) {
         close(fd);
         return false;
     }
@@ -119,15 +134,25 @@ static bool gun_open(const char *devnode)
     gun->fd = fd;
     snprintf(gun->devnode, sizeof(gun->devnode), "%s", devnode);
 
-    if (ioctl(fd, EVIOCGABS(ABS_X), &absinfo) == 0) {
-        gun->x.min = absinfo.minimum;
-        gun->x.max = absinfo.maximum;
-        gun->x.value = absinfo.value;
-    }
-    if (ioctl(fd, EVIOCGABS(ABS_Y), &absinfo) == 0) {
-        gun->y.min = absinfo.minimum;
-        gun->y.max = absinfo.maximum;
-        gun->y.value = absinfo.value;
+    if (has_abs) {
+        if (ioctl(fd, EVIOCGABS(ABS_X), &absinfo) == 0) {
+            gun->x.min = absinfo.minimum;
+            gun->x.max = absinfo.maximum;
+            gun->x.value = absinfo.value;
+        }
+        if (ioctl(fd, EVIOCGABS(ABS_Y), &absinfo) == 0) {
+            gun->y.min = absinfo.minimum;
+            gun->y.max = absinfo.maximum;
+            gun->y.value = absinfo.value;
+        }
+    } else {
+        // Relative mouse: synthesize a centered virtual axis that
+        // gun_drain_events() drives from REL_X/REL_Y deltas
+        gun->rel_axes = true;
+        gun->x.max = REL_AXIS_RANGE;
+        gun->x.value = REL_AXIS_RANGE / 2;
+        gun->y.max = REL_AXIS_RANGE;
+        gun->y.value = REL_AXIS_RANGE / 2;
     }
 
     if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(keybits)), keybits) >= 0) {
@@ -141,9 +166,10 @@ static bool gun_open(const char *devnode)
     }
 
     fprintf(stderr,
-            "evdev-gun: gun %d: %s, ABS_X(%d, %d), ABS_Y(%d, %d)%s\n",
+            "evdev-gun: gun %d: %s, ABS_X(%d, %d), ABS_Y(%d, %d)%s%s\n",
             num_guns, devnode, gun->x.min, gun->x.max, gun->y.min,
-            gun->y.max, gun->has_touch ? ", BTN_TOUCH" : "");
+            gun->y.max, gun->rel_axes ? " [relative mouse]" : "",
+            gun->has_touch ? ", BTN_TOUCH" : "");
     num_guns++;
     return true;
 }
@@ -152,7 +178,8 @@ static bool gun_open(const char *devnode)
  * Enumerate input devices carrying the given udev property and open any
  * that expose absolute X/Y axes, in ascending /dev/input/eventN order.
  */
-static void scan_udev_property(struct udev *udev, const char *property)
+static void scan_udev_property(struct udev *udev, const char *property,
+                               bool allow_relative)
 {
     struct udev_enumerate *enumerate = udev_enumerate_new(udev);
     if (!enumerate) {
@@ -187,7 +214,7 @@ static void scan_udev_property(struct udev *udev, const char *property)
     qsort(devnodes, count, sizeof(devnodes[0]), devnode_cmp);
 
     for (int i = 0; i < count; i++) {
-        gun_open(devnodes[i]);
+        gun_open(devnodes[i], allow_relative);
         g_free(devnodes[i]);
     }
 
@@ -206,14 +233,17 @@ static void scan_devices(void)
 
     /*
      * Prefer devices tagged as light guns (ID_INPUT_GUN=1, set by
-     * Batocera/Sinden/Gun4IR udev rules). Only if none are tagged,
-     * fall back to absolute-axis mice: a light gun without dedicated
-     * udev rules usually identifies as one. Regular relative mice are
-     * never matched here and keep working through the SDL pointer.
+     * Batocera/Sinden/Gun4IR udev rules); tagging is an explicit
+     * opt-in, so relative mice are accepted there too (each becomes an
+     * independent virtual pointer, enabling e.g. 2-player with two
+     * mice). Only if nothing is tagged, fall back to absolute-axis
+     * mice: a light gun without dedicated udev rules usually
+     * identifies as one. Untagged relative mice are never matched and
+     * keep working through the SDL pointer.
      */
-    scan_udev_property(udev, "ID_INPUT_GUN");
+    scan_udev_property(udev, "ID_INPUT_GUN", true);
     if (num_guns == 0) {
-        scan_udev_property(udev, "ID_INPUT_MOUSE");
+        scan_udev_property(udev, "ID_INPUT_MOUSE", false);
     }
 
     udev_unref(udev);
@@ -263,6 +293,16 @@ static void gun_drain_events(EvdevGun *gun)
                 gun->x.value = evt.value;
             } else if (evt.code == ABS_Y) {
                 gun->y.value = evt.value;
+            }
+            break;
+        case EV_REL:
+            if (gun->rel_axes) {
+                EvdevGunAxis *axis = (evt.code == REL_X) ? &gun->x :
+                                     (evt.code == REL_Y) ? &gun->y : NULL;
+                if (axis) {
+                    int v = axis->value + evt.value * REL_DELTA_SCALE;
+                    axis->value = MIN(MAX(v, axis->min), axis->max);
+                }
             }
             break;
         default:

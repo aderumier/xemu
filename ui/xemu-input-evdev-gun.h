@@ -1,10 +1,11 @@
 /*
  * xemu Linux evdev light gun support
  *
- * Reads absolute-position light gun devices directly from /dev/input,
- * enumerated via libudev. Devices tagged with the ID_INPUT_GUN udev
- * property (e.g. by Batocera/Sinden/Gun4IR udev rules) are matched in
- * priority; if none are found, absolute-axis mice are considered (a
+ * Reads light gun devices directly from /dev/input, enumerated via
+ * libudev. Devices tagged with the ID_INPUT_GUN udev property (e.g. by
+ * Batocera/Sinden/Gun4IR udev rules) are matched in priority; tagged
+ * relative mice are accepted too, each driving an independent virtual
+ * pointer. If nothing is tagged, absolute-axis mice are considered (a
  * light gun lacking dedicated udev rules typically reports as one).
  *
  * Copyright (C) 2026

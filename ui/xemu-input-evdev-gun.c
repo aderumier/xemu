@@ -318,6 +318,13 @@ void xemu_input_evdev_gun_poll(void)
     }
 }
 
+/*
+ * Fraction of the axis range near each edge treated as offscreen for
+ * absolute guns without BTN_TOUCH: when such a gun (e.g. Sinden) loses
+ * the screen, its position pins at/near the axis extremes.
+ */
+#define EDGE_OFFSCREEN_MARGIN 0.02f
+
 bool xemu_input_evdev_gun_get_pos(int index, float *x, float *y)
 {
     if (index < 0 || index >= num_guns) {
@@ -337,6 +344,13 @@ bool xemu_input_evdev_gun_get_pos(int index, float *x, float *y)
 
     float fx = (float)(gun->x.value - gun->x.min) / range_x;
     float fy = (float)(gun->y.value - gun->y.min) / range_y;
+
+    if (!gun->rel_axes && !gun->has_touch &&
+        (fx < EDGE_OFFSCREEN_MARGIN || fx > 1.0f - EDGE_OFFSCREEN_MARGIN ||
+         fy < EDGE_OFFSCREEN_MARGIN || fy > 1.0f - EDGE_OFFSCREEN_MARGIN)) {
+        return false;
+    }
+
     *x = MIN(MAX(fx, 0.0f), 1.0f);
     *y = MIN(MAX(fy, 0.0f), 1.0f);
     return true;

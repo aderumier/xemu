@@ -3096,6 +3096,12 @@ void qemu_init(int argc, char **argv)
             argv[i] = NULL;
             if (i < argc - 1 && argv[i+1]) {
                 dvd_path = argv[i+1];
+                /* Propagate into the config: the Chihiro FATX builder
+                 * and boot.id parsing read dvd_path from there, not
+                 * from the -drive argument built below */
+                xemu_settings_set_string(&g_config.sys.files.dvd_path,
+                                         dvd_path);
+                dvd_path = g_config.sys.files.dvd_path;
                 argv[i+1] = NULL;
             }
             break;

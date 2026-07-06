@@ -29,6 +29,7 @@
 #include "qemu/config-file.h"
 
 #include "xemu-input.h"
+#include "xemu-input-evdev-gun.h"
 #include "xemu-notifications.h"
 #include "xemu-settings.h"
 #include <stdio.h>
@@ -513,59 +514,87 @@ void xemu_input_update_controller(ControllerState *state)
     state->last_input_updated_ts = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
 }
 
+static void xemu_input_update_jvs_player(ChihiroJVSState *jvs, int player,
+                                         bool offscreen, bool trigger,
+                                         bool reload, bool start,
+                                         bool service, float gx, float gy)
+{
+    if (offscreen) {
+        jvs->analog[player * 2 + 0] = 0;
+        jvs->analog[player * 2 + 1] = 0;
+    } else {
+        jvs->analog[player * 2 + 0] = (uint16_t)(gx * 0xFFFF);
+        jvs->analog[player * 2 + 1] = (uint16_t)(gy * 0xFFFF);
+    }
+
+    uint8_t sw0 = 0;
+    if (trigger) sw0 |= 0x02;
+    if (reload)  sw0 |= 0x01;
+    if (start)   sw0 |= 0x80;
+    if (service) sw0 |= 0x40;
+    jvs->player_switches[player][0] = sw0;
+
+    uint8_t sw1 = 0;
+    if (!offscreen && !reload) {
+        sw1 |= 0x80;  /* SCREEN-IN = IN (byte1 bit7): gun sensor detects screen */
+    }
+    jvs->player_switches[player][1] = sw1;
+}
+
 static void xemu_input_update_jvs_lightgun(void)
 {
     if (!chihiro_jvs_global) return;
     ChihiroJVSState *jvs = chihiro_jvs_global;
 
     const bool *kbd = SDL_GetKeyboardState(NULL);
-    float mx, my;
-    uint32_t mouseBtn = SDL_GetMouseState(&mx, &my);
 
-    int32_t winW, winH;
-    SDL_GetWindowSize(m_window, &winW, &winH);
+    bool p1_start = kbd[g_config.input.keyboard_controller_scancode_map.start];
+    bool p1_service = kbd[SDL_SCANCODE_9];
 
-    if (viewport_coords[2] > 0 && viewport_coords[3] > 0) {
-        int32_t drawW, drawH;
-        SDL_GetWindowSizeInPixels(m_window, &drawW, &drawH);
-        float scaleW = (float)winW / (float)drawW;
-        float scaleH = (float)winH / (float)drawH;
-        mx -= viewport_coords[0] * scaleW;
-        my -= viewport_coords[1] * scaleH;
-        winW = (int)(viewport_coords[2] * scaleW);
-        winH = (int)(viewport_coords[3] * scaleH);
-    }
-
-    bool offscreen = !(mx >= 0 && mx <= winW && my >= 0 && my <= winH);
-    bool trigger = (mouseBtn & SDL_BUTTON_MASK(SDL_BUTTON_LEFT)) != 0;
-    bool reload  = (mouseBtn & SDL_BUTTON_MASK(SDL_BUTTON_RIGHT)) != 0 ||
-                   kbd[SDL_SCANCODE_R];
-
-    uint8_t sw0 = 0;
-
-    if (offscreen) {
-        jvs->analog[0] = 0;
-        jvs->analog[1] = 0;
+    if (xemu_input_evdev_gun_available()) {
+        // evdev light guns (ID_INPUT_GUN in priority): gun 0 drives
+        // player 1, gun 1 (if present) drives player 2
+        int num = MIN(xemu_input_evdev_gun_count(), JVS_MAX_PLAYERS);
+        for (int p = 0; p < num; p++) {
+            float gx = 0, gy = 0;
+            bool offscreen = !xemu_input_evdev_gun_get_pos(p, &gx, &gy);
+            uint32_t gunBtn = xemu_input_evdev_gun_get_buttons(p);
+            bool trigger = (gunBtn & EVDEV_GUN_BTN_TRIGGER) != 0;
+            bool reload = (gunBtn & EVDEV_GUN_BTN_RELOAD) != 0 ||
+                          (p == 0 && kbd[SDL_SCANCODE_R]);
+            bool start = (gunBtn & EVDEV_GUN_BTN_AUX) != 0 ||
+                         (p == 0 && p1_start);
+            xemu_input_update_jvs_player(jvs, p, offscreen, trigger, reload,
+                                         start, p == 0 && p1_service, gx, gy);
+        }
     } else {
-        jvs->analog[0] = (uint16_t)(mx * 0xFFFF / winW);
-        jvs->analog[1] = (uint16_t)(my * 0xFFFF / winH);
+        float mx, my;
+        uint32_t mouseBtn = SDL_GetMouseState(&mx, &my);
+
+        int32_t winW, winH;
+        SDL_GetWindowSize(m_window, &winW, &winH);
+
+        if (viewport_coords[2] > 0 && viewport_coords[3] > 0) {
+            int32_t drawW, drawH;
+            SDL_GetWindowSizeInPixels(m_window, &drawW, &drawH);
+            float scaleW = (float)winW / (float)drawW;
+            float scaleH = (float)winH / (float)drawH;
+            mx -= viewport_coords[0] * scaleW;
+            my -= viewport_coords[1] * scaleH;
+            winW = (int)(viewport_coords[2] * scaleW);
+            winH = (int)(viewport_coords[3] * scaleH);
+        }
+
+        bool offscreen = !(mx >= 0 && mx <= winW && my >= 0 && my <= winH);
+        bool trigger = (mouseBtn & SDL_BUTTON_MASK(SDL_BUTTON_LEFT)) != 0;
+        bool reload  = (mouseBtn & SDL_BUTTON_MASK(SDL_BUTTON_RIGHT)) != 0 ||
+                       kbd[SDL_SCANCODE_R];
+
+        xemu_input_update_jvs_player(jvs, 0, offscreen, trigger, reload,
+                                     p1_start, p1_service,
+                                     winW > 0 ? mx / winW : 0,
+                                     winH > 0 ? my / winH : 0);
     }
-
-    if (trigger) sw0 |= 0x02;
-    if (reload)  sw0 |= 0x01;
-
-    if (kbd[g_config.input.keyboard_controller_scancode_map.start])
-        sw0 |= 0x80;
-    if (kbd[SDL_SCANCODE_9])
-        sw0 |= 0x40;
-
-    jvs->player_switches[0][0] = sw0;
-
-    uint8_t sw1 = 0;
-    if (!offscreen && !reload) {
-        sw1 |= 0x80;  /* SCREEN-IN = IN (byte1 bit7): gun sensor detects screen */
-    }
-    jvs->player_switches[0][1] = sw1;
 
     jvs->system_switches = kbd[SDL_SCANCODE_F2] ? 0x80 : 0x00;
 
@@ -578,6 +607,10 @@ static void xemu_input_update_jvs_lightgun(void)
 
 void xemu_input_update_controllers(void)
 {
+    if (xemu_input_lightgun_active() || chihiro_jvs_global) {
+        xemu_input_evdev_gun_poll();
+    }
+
     ControllerState *iter;
     QTAILQ_FOREACH (iter, &available_controllers, entry) {
         xemu_input_update_controller(iter);
@@ -601,7 +634,39 @@ void xemu_input_update_sdl_kbd_controller_state(ControllerState *state)
         return;
 
     const char *bound_driver = get_bound_driver(state->bound);
-    if (strcmp(bound_driver, DRIVER_LIGHT_GUN) == 0) {
+    if (strcmp(bound_driver, DRIVER_LIGHT_GUN) == 0 &&
+        xemu_input_evdev_gun_available()) {
+        // Aim comes straight from the evdev device (ID_INPUT_GUN in
+        // priority); the SDL pointer is bypassed entirely.
+        float gx, gy;
+        if (xemu_input_evdev_gun_get_pos(0, &gx, &gy)) {
+            int32_t x = (int32_t)((gx - 0.5f) * 65535.0f);
+            int32_t y = (int32_t)((0.5f - gy) * 65535.0f);
+            state->lg.axis[0] = (int16_t)MIN(MAX(x, -32768), 32767);
+            state->lg.axis[1] = (int16_t)MIN(MAX(y, -32768), 32767);
+            state->lg.status = 0x20; // Light Visible
+        } else {
+            state->lg.status = 0x00;
+        }
+
+        uint32_t gunBtn = xemu_input_evdev_gun_get_buttons(0);
+        if (gunBtn & EVDEV_GUN_BTN_TRIGGER)
+            state->lg.buttons |= CONTROLLER_BUTTON_A;
+        if (gunBtn & EVDEV_GUN_BTN_RELOAD)
+            state->lg.buttons |= CONTROLLER_BUTTON_B;
+        if (gunBtn & EVDEV_GUN_BTN_AUX)
+            state->lg.buttons |= CONTROLLER_BUTTON_START;
+
+        if (kbd[g_config.input.keyboard_controller_scancode_map.a])
+            state->lg.buttons |= CONTROLLER_BUTTON_A;
+        if (kbd[g_config.input.keyboard_controller_scancode_map.b])
+            state->lg.buttons |= CONTROLLER_BUTTON_B;
+        if (kbd[g_config.input.keyboard_controller_scancode_map.start])
+            state->lg.buttons |= CONTROLLER_BUTTON_START;
+        if (kbd[g_config.input.keyboard_controller_scancode_map.back])
+            state->lg.buttons |= CONTROLLER_BUTTON_BACK;
+
+    } else if (strcmp(bound_driver, DRIVER_LIGHT_GUN) == 0) {
         uint32_t mouseBtn = SDL_GetMouseState(&m_mouseX, &m_mouseY);
 
         int32_t windowWidth, windowHeight;

@@ -197,6 +197,10 @@ case "$platform" in # Adjust compilation options based on platform
         echo 'Compiling for Linux...'
         sys_cflags='-Wno-error=redundant-decls'
         opts="$opts --disable-werror"
+        # libudev is used to enumerate evdev light gun devices
+        if pkg-config --exists libudev 2>/dev/null; then
+            opts="$opts --enable-libudev"
+        fi
         postbuild='package_linux'
         ;;
     Darwin)

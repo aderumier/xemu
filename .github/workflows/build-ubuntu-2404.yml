@@ -86,6 +86,28 @@ jobs:
         patchelf --force-rpath --set-rpath '$ORIGIN/lib' dist/xemu
         echo "Bundled libraries:"
         ls dist/lib
+    - name: Generate AppImage
+      env:
+        # Run linuxdeploy without FUSE (not set up on GitHub runners)
+        APPIMAGE_EXTRACT_AND_RUN: 1
+      run: |
+        wget -q https://github.com/linuxdeploy/linuxdeploy/releases/latest/download/linuxdeploy-x86_64.AppImage
+        chmod +x linuxdeploy-x86_64.AppImage
+
+        # Use the unpatched binary: linuxdeploy bundles libraries and
+        # sets rpaths itself
+        mkdir -p appdir/usr/bin
+        cp build/qemu-system-i386 appdir/usr/bin/xemu
+        install -DT xemu.metainfo.xml appdir/usr/share/metainfo/xemu.metainfo.xml
+
+        export VERSION=$(git describe --tags --match 'v*' 2>/dev/null || echo ${GITHUB_SHA::7})
+        ./linuxdeploy-x86_64.AppImage \
+          --appdir appdir \
+          -d ui/xemu.desktop \
+          -i ui/icons/xemu.svg \
+          --output appimage
+        mv xemu-*.AppImage dist/
+        ls -la dist/
     - name: Upload build artifact
       uses: actions/upload-artifact@v4
       with:

@@ -569,6 +569,11 @@ static void xemu_input_update_jvs_lightgun(void)
             bool trigger = (gunBtn & EVDEV_GUN_BTN_TRIGGER) != 0;
             bool reload = (gunBtn & EVDEV_GUN_BTN_RELOAD) != 0 ||
                           (p == 0 && kbd[SDL_SCANCODE_R]);
+            // Shooting offscreen reloads, like on the real cabinet
+            if (offscreen && trigger) {
+                reload = true;
+                trigger = false;
+            }
             bool start = (gunBtn & EVDEV_GUN_BTN_AUX) != 0 ||
                          (p == 0 && p1_start);
             bool coin = (gunBtn & EVDEV_GUN_BTN_1) != 0 ||
@@ -599,6 +604,11 @@ static void xemu_input_update_jvs_lightgun(void)
         bool trigger = (mouseBtn & SDL_BUTTON_MASK(SDL_BUTTON_LEFT)) != 0;
         bool reload  = (mouseBtn & SDL_BUTTON_MASK(SDL_BUTTON_RIGHT)) != 0 ||
                        kbd[SDL_SCANCODE_R];
+        // Shooting offscreen reloads, like on the real cabinet
+        if (offscreen && trigger) {
+            reload = true;
+            trigger = false;
+        }
         bool start = (mouseBtn & SDL_BUTTON_MASK(SDL_BUTTON_MIDDLE)) != 0 ||
                      p1_start;
         bool coin = (mouseBtn & SDL_BUTTON_MASK(SDL_BUTTON_X1)) != 0 ||

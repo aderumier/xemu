@@ -809,6 +809,49 @@ void chihiro_usb_dump_vendor_histogram(void)
     printf("================================\n");
 }
 
+/*
+ * Pick the baseboard region (ic10[0x1F00]: 0x01=JPN, 0x02=USA, 0x03=EXP)
+ * from the game's boot.id regionFlags (offset 0x38, layout from
+ * Cxbx-Reloaded MediaBoard.h). SEGABOOT accepts the game when
+ * regionFlags has bit (region - 1) set, so choose the lowest region the
+ * game advertises; otherwise SEGABOOT shows "THIS GAME IS NOT
+ * ACCEPTABLE BY MAIN BOARD". Defaults to USA (matches the HOTD3 US
+ * dump, regionFlags=0xFFFFFF0E) when boot.id is missing or invalid.
+ */
+static uint8_t chihiro_region_from_bootid(void)
+{
+    extern char chihiro_game_dir[1024];
+    uint8_t region = 0x02;
+
+    if (!chihiro_game_dir[0]) {
+        return region;
+    }
+
+    char path[1100];
+    snprintf(path, sizeof(path), "%s/boot.id", chihiro_game_dir);
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        return region;
+    }
+
+    uint8_t bid[0x40];
+    if (fread(bid, 1, sizeof(bid), f) == sizeof(bid) &&
+        memcmp(bid, "BTID", 4) == 0) {
+        uint32_t flags = bid[0x38] | (bid[0x39] << 8) |
+                         (bid[0x3A] << 16) | ((uint32_t)bid[0x3B] << 24);
+        for (int i = 0; i < 3; i++) {
+            if (flags & (1u << i)) {
+                region = i + 1;
+                break;
+            }
+        }
+        printf("[%07lld] Chihiro QC: boot.id regionFlags=0x%08X -> "
+               "region 0x%02X\n", TS_MS, flags, region);
+    }
+    fclose(f);
+    return region;
+}
+
 static void chihiro_an2131qc_realize(USBDevice *dev, Error **errp)
 {
     ChihiroUSBState *s = (ChihiroUSBState *)dev;
@@ -823,10 +866,9 @@ static void chihiro_an2131qc_realize(USBDevice *dev, Error **errp)
                    "ic10 firmware must be exactly 8KB");
     memcpy(s->eeprom, hotd3_ic10_g24lc64, sizeof(s->eeprom));
 
-    /* Override region to USA (0x02) to match game's bootid regionFlags.
-     * HOD3 bootid has regionFlags=0xFFFFFF0E (US+EXP, no JP).
-     * Original ic10 EEPROM has 0x01 (Japan) which would cause ERROR 31. */
-    s->eeprom[0x1F00] = 0x02;  /* Region: 01=JPN, 02=USA, 03=EXP */
+    /* Region from the game's boot.id (original ic10 dump has 0x01/Japan,
+     * which fails the SEGABOOT region check for non-JP games) */
+    s->eeprom[0x1F00] = chihiro_region_from_bootid();
 
     /* Initialize per-endpoint bulk transfer state */
     memset(s->ep_in, 0, sizeof(s->ep_in));

@@ -559,8 +559,9 @@ static void chihiro_diag_timer_cb(void *opaque)
                 if (lt == 1) {
                     uint32_t ec = *(uint32_t*)(pg + 0x400);
                     uint32_t et = *(uint32_t*)(pg + 0x408);
-                    if(0) printf("  ERROR INFO: ctx=%u typ=%u "
-                           "(1=generic 3=region 5=media)\n", ec, et);
+                    printf("[%07lld] Chihiro: SEGABOOT error page: ctx=%u "
+                           "typ=%u (1=generic 3=region 5=media)\n",
+                           TS_MS, ec, et);
                 }
             }
             prev_ldp = cur_ldp;
@@ -615,7 +616,9 @@ static void chihiro_diag_timer_cb(void *opaque)
                         if (lt == 1) {
                             uint32_t ec = *(uint32_t*)(pg + 0x400);
                             uint32_t et = *(uint32_t*)(pg + 0x408);
-                            if(0) printf("  LDP ERROR: ctx=%u typ=%u\n", ec, et);
+                            printf("[%07lld] Chihiro: SEGABOOT error page: "
+                                   "ctx=%u typ=%u (1=generic 3=region "
+                                   "5=media)\n", TS_MS, ec, et);
                         }
                     }
                 }

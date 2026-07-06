@@ -68,6 +68,24 @@ jobs:
         fi
         echo "no shared libpcap dependency: OK"
         ldd build/qemu-system-i386
+    - name: Bundle shared libraries for portability
+      # Ship every non-glibc dependency in dist/lib and point the
+      # binary at it with a transitive rpath (DT_RPATH, hence
+      # --force-rpath), so the artifact runs on distros with different
+      # library sonames/versions (e.g. Batocera). glibc itself comes
+      # from the host system.
+      run: |
+        sudo apt-get -qy install patchelf
+        mkdir -p dist/lib
+        for lib in $(ldd build/qemu-system-i386 | awk '$3 ~ /^\// {print $3}'); do
+          case "$(basename "$lib")" in
+            libc.so.*|libm.so.*|libpthread.so.*|libdl.so.*|librt.so.*|libresolv.so.*|ld-linux*) continue ;;
+          esac
+          cp -n "$lib" dist/lib/
+        done
+        patchelf --force-rpath --set-rpath '$ORIGIN/lib' dist/xemu
+        echo "Bundled libraries:"
+        ls dist/lib
     - name: Upload build artifact
       uses: actions/upload-artifact@v4
       with:

@@ -846,11 +846,21 @@ static uint8_t chihiro_region_from_bootid(void)
         memcmp(bid, "BTID", 4) == 0) {
         uint32_t flags = bid[0x38] | (bid[0x39] << 8) |
                          (bid[0x3A] << 16) | ((uint32_t)bid[0x3B] << 24);
-        for (int i = 0; i < 3; i++) {
-            if (flags & (1u << i)) {
-                region = i + 1;
-                break;
-            }
+        /*
+         * regionFlags bits (from Cxbx-Reloaded MediaBoard.h):
+         *   0x2 = Japan, 0x4 = USA, 0x8 = Export.
+         * The baseboard region byte SEGABOOT checks against is
+         *   0x01 = Japan, 0x02 = USA, 0x03 = Export,
+         * i.e. region R is accepted iff bit (1 << R) is set in flags.
+         * Prefer USA, then Export, then Japan so multi-region titles
+         * come up in English.
+         */
+        if (flags & 0x4) {
+            region = 0x02;  /* USA */
+        } else if (flags & 0x8) {
+            region = 0x03;  /* Export */
+        } else if (flags & 0x2) {
+            region = 0x01;  /* Japan */
         }
         printf("[%07lld] Chihiro QC: boot.id regionFlags=0x%08X -> "
                "region 0x%02X\n", TS_MS, flags, region);

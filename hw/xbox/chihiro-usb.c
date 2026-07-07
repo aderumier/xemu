@@ -899,6 +899,26 @@ static bool chihiro_backup_path(char *out, size_t out_len)
         }
     }
 
+    /* Save alongside the EEPROM file (a proper saves directory, e.g.
+     * /userdata/saves/chihiro on Batocera); fall back to xemu's data
+     * directory when eeprom_path is unset. */
+    const char *eeprom = g_config.sys.files.eeprom_path;
+    if (eeprom && eeprom[0]) {
+        const char *slash = strrchr(eeprom, '/');
+#ifdef _WIN32
+        const char *bslash = strrchr(eeprom, '\\');
+        if (bslash && (!slash || bslash > slash)) {
+            slash = bslash;
+        }
+#endif
+        if (slash) {
+            int dir_len = (int)(slash - eeprom) + 1;
+            snprintf(out, out_len, "%.*schihiro_%s_backup.bin",
+                     dir_len, eeprom, game_id);
+            return true;
+        }
+    }
+
     const char *base = xemu_settings_get_base_path();
     if (!base) {
         return false;

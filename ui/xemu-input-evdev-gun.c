@@ -26,7 +26,6 @@
 
 #include <libudev.h>
 #include <linux/input.h>
-#include <dirent.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
@@ -257,28 +256,6 @@ static int devnode_cmp(const void *a, const void *b)
     return strcmp(x, y);
 }
 
-static void log_node_buttons(const char *devnode, const unsigned long *keybits)
-{
-    char buf[512];
-    int len = 0;
-
-    for (int code = 0; code <= KEY_MAX && len < (int)sizeof(buf) - 32;
-         code++) {
-        if (!TEST_BIT(code, keybits)) {
-            continue;
-        }
-        const char *name = btn_name_for_code(code);
-        if (name) {
-            len += snprintf(buf + len, sizeof(buf) - len, " %s", name);
-        } else if (code >= BTN_MISC) {
-            len += snprintf(buf + len, sizeof(buf) - len, " 0x%x", code);
-        }
-    }
-    if (len > 0) {
-        fprintf(stderr, "evdev-gun:   %s buttons:%s\n", devnode, buf);
-    }
-}
-
 /*
  * Open one event node and attach it to `gun`. The first node exposing
  * ABS_X/ABS_Y provides the aim axes; every node contributes button
@@ -322,17 +299,15 @@ static bool gun_node_open(EvdevGun *gun, const char *devnode)
     }
     gun->has_rel |= node_rel;
 
-    if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(keybits)), keybits) >= 0) {
-        if (TEST_BIT(BTN_TOUCH, keybits)) {
-            gun->has_touch = true;
-            unsigned long keystate[NBITS(KEY_MAX + 1)] = { 0 };
-            if (ioctl(fd, EVIOCGKEY(sizeof(keystate)), keystate) >= 0 &&
-                TEST_BIT(BTN_TOUCH, keystate)) {
-                gun->touch = true;
-                gun->touch_seen = true;
-            }
+    if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(keybits)), keybits) >= 0 &&
+        TEST_BIT(BTN_TOUCH, keybits)) {
+        gun->has_touch = true;
+        unsigned long keystate[NBITS(KEY_MAX + 1)] = { 0 };
+        if (ioctl(fd, EVIOCGKEY(sizeof(keystate)), keystate) >= 0 &&
+            TEST_BIT(BTN_TOUCH, keystate)) {
+            gun->touch = true;
+            gun->touch_seen = true;
         }
-        log_node_buttons(devnode, keybits);
     }
 
     if (gun->num_fds == 0) {
@@ -543,72 +518,10 @@ static bool scan_config_devices(void)
     return any_configured;
 }
 
-/*
- * List every input device exposing ABS_X/ABS_Y, from sysfs (readable
- * without device permissions). Helps picking the aim node when a
- * merged/virtual gun device carries the buttons but not the position
- * (e.g. Batocera virtual guns: aim stays on the gun's real mouse
- * node).
- */
-static void log_abs_candidates(void)
-{
-    DIR *dir = opendir("/sys/class/input");
-    if (!dir) {
-        return;
-    }
-
-    struct dirent *ent;
-    while ((ent = readdir(dir))) {
-        if (strncmp(ent->d_name, "event", 5) != 0) {
-            continue;
-        }
-
-        char path[PATH_MAX];
-        char buf[256] = { 0 };
-
-        snprintf(path, sizeof(path),
-                 "/sys/class/input/%s/device/capabilities/abs", ent->d_name);
-        FILE *f = fopen(path, "r");
-        if (!f) {
-            continue;
-        }
-        bool ok = fgets(buf, sizeof(buf), f) != NULL;
-        fclose(f);
-        if (!ok) {
-            continue;
-        }
-
-        /* Last space-separated hex group holds bits 0..63; ABS_X and
-         * ABS_Y are bits 0 and 1 */
-        char *last = strrchr(g_strchomp(buf), ' ');
-        unsigned long long bits = strtoull(last ? last + 1 : buf, NULL, 16);
-        if ((bits & 0x3) != 0x3) {
-            continue;
-        }
-
-        char name[128] = "?";
-        snprintf(path, sizeof(path), "/sys/class/input/%s/device/name",
-                 ent->d_name);
-        f = fopen(path, "r");
-        if (f) {
-            if (fgets(name, sizeof(name), f)) {
-                g_strchomp(name);
-            }
-            fclose(f);
-        }
-
-        fprintf(stderr,
-                "evdev-gun: aim-capable device: /dev/input/%s '%s'\n",
-                ent->d_name, name);
-    }
-    closedir(dir);
-}
-
 static void scan_devices(void)
 {
     scanned = true;
 
-    log_abs_candidates();
     parse_button_bindings();
 
     if (scan_config_devices()) {
@@ -683,17 +596,6 @@ static void log_unmapped_button(uint16_t code)
     }
 }
 
-/* Set XEMU_EVDEV_GUN_DEBUG=1 to dump incoming events on stderr */
-static bool debug_events(void)
-{
-    static int enabled = -1;
-    if (enabled < 0) {
-        const char *env = getenv("XEMU_EVDEV_GUN_DEBUG");
-        enabled = env && env[0] && strcmp(env, "0") != 0;
-    }
-    return enabled;
-}
-
 static void gun_drain_node(EvdevGun *gun, int fd)
 {
     struct input_event evt;
@@ -702,15 +604,6 @@ static void gun_drain_node(EvdevGun *gun, int fd)
         ssize_t n = read(fd, &evt, sizeof(evt));
         if (n != sizeof(evt)) {
             break;
-        }
-
-        if (debug_events() && evt.type != EV_SYN) {
-            static int dumped;
-            if (dumped < 500) {
-                dumped++;
-                fprintf(stderr, "evdev-gun: event type=%u code=%u value=%d\n",
-                        evt.type, evt.code, evt.value);
-            }
         }
 
         switch (evt.type) {

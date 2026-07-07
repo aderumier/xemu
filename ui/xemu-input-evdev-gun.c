@@ -50,16 +50,21 @@ typedef struct EvdevGun {
     char devnode[128];       /* first node, for display */
     EvdevGunAxis x;
     EvdevGunAxis y;
+    EvdevGunAxis abs_x;      /* absolute axis info as advertised at open,
+                                kept so the active axes can be switched
+                                between abs and rel at runtime */
+    EvdevGunAxis abs_y;
     uint32_t buttons;
     bool has_abs;
     bool has_rel;
+    bool abs_seen;    /* an ABS_X/ABS_Y event was actually received */
     bool has_touch;   /* some node reports BTN_TOUCH (offscreen indicator) */
     bool touch;
     bool touch_seen;  /* a BTN_TOUCH event (or pressed initial state) was
                          actually observed; some devices advertise BTN_TOUCH
                          in their descriptor but never emit it */
-    bool rel_axes;    /* relative mouse: axes are synthetic, driven by
-                         integrating REL_X/REL_Y deltas */
+    bool rel_axes;    /* axes are synthetic, driven by integrating
+                         REL_X/REL_Y deltas */
 } EvdevGun;
 
 /*
@@ -303,14 +308,14 @@ static bool gun_node_open(EvdevGun *gun, const char *devnode)
 
     if (node_abs && !gun->has_abs) {
         if (ioctl(fd, EVIOCGABS(ABS_X), &absinfo) == 0) {
-            gun->x.min = absinfo.minimum;
-            gun->x.max = absinfo.maximum;
-            gun->x.value = absinfo.value;
+            gun->abs_x.min = absinfo.minimum;
+            gun->abs_x.max = absinfo.maximum;
+            gun->abs_x.value = absinfo.value;
         }
         if (ioctl(fd, EVIOCGABS(ABS_Y), &absinfo) == 0) {
-            gun->y.min = absinfo.minimum;
-            gun->y.max = absinfo.maximum;
-            gun->y.value = absinfo.value;
+            gun->abs_y.min = absinfo.minimum;
+            gun->abs_y.max = absinfo.maximum;
+            gun->abs_y.value = absinfo.value;
         }
         gun->has_abs = true;
     }
@@ -344,11 +349,35 @@ static void gun_close(EvdevGun *gun)
     memset(gun, 0, sizeof(*gun));
 }
 
+static bool gun_abs_usable(const EvdevGun *gun)
+{
+    return gun->has_abs && gun->abs_x.max > gun->abs_x.min &&
+           gun->abs_y.max > gun->abs_y.min;
+}
+
+static void gun_use_abs_axes(EvdevGun *gun)
+{
+    gun->rel_axes = false;
+    gun->x = gun->abs_x;
+    gun->y = gun->abs_y;
+}
+
+static void gun_use_rel_axes(EvdevGun *gun)
+{
+    gun->rel_axes = true;
+    gun->x.min = 0;
+    gun->x.max = REL_AXIS_RANGE;
+    gun->x.value = REL_AXIS_RANGE / 2;
+    gun->y.min = 0;
+    gun->y.max = REL_AXIS_RANGE;
+    gun->y.value = REL_AXIS_RANGE / 2;
+}
+
 /*
  * Finish setting up a gun once all of its nodes are open. Without any
- * absolute axes, synthesize a centered virtual axis driven by relative
- * deltas (allow_relative permitting). Returns false (and rolls back)
- * if the gun ends up unusable.
+ * (usable) absolute axes, synthesize a centered virtual axis driven by
+ * relative deltas (allow_relative permitting). Returns false (and
+ * rolls back) if the gun ends up unusable.
  */
 static bool gun_finalize(EvdevGun *gun, bool allow_relative)
 {
@@ -356,27 +385,29 @@ static bool gun_finalize(EvdevGun *gun, bool allow_relative)
         return false;
     }
 
-    if (!gun->has_abs) {
-        if (!(allow_relative && gun->has_rel)) {
-            gun_close(gun);
-            return false;
-        }
-        gun->rel_axes = true;
-        gun->x.min = 0;
-        gun->x.max = REL_AXIS_RANGE;
-        gun->x.value = REL_AXIS_RANGE / 2;
-        gun->y.min = 0;
-        gun->y.max = REL_AXIS_RANGE;
-        gun->y.value = REL_AXIS_RANGE / 2;
+    if (gun->has_abs && !gun_abs_usable(gun)) {
+        fprintf(stderr,
+                "evdev-gun: %s advertises ABS_X/ABS_Y with an invalid "
+                "range, ignoring absolute axes\n", gun->devnode);
+    }
+
+    if (gun_abs_usable(gun)) {
+        gun_use_abs_axes(gun);
+    } else if (allow_relative && gun->has_rel) {
+        gun_use_rel_axes(gun);
+    } else {
+        gun_close(gun);
+        return false;
     }
 
     fprintf(stderr,
             "evdev-gun: gun %d: %s (%d node%s), ABS_X(%d, %d), "
-            "ABS_Y(%d, %d)%s%s\n",
+            "ABS_Y(%d, %d)%s%s%s\n",
             num_guns, gun->devnode, gun->num_fds,
             gun->num_fds > 1 ? "s" : "", gun->x.min, gun->x.max,
             gun->y.min, gun->y.max,
-            gun->rel_axes ? " [relative mouse]" : "",
+            gun->rel_axes ? " [relative mode]" : "",
+            gun->has_rel ? ", REL" : "",
             gun->has_touch ? ", BTN_TOUCH" : "");
     num_guns++;
     return true;
@@ -589,6 +620,17 @@ static void log_unmapped_button(uint16_t code)
     }
 }
 
+/* Set XEMU_EVDEV_GUN_DEBUG=1 to dump incoming events on stderr */
+static bool debug_events(void)
+{
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *env = getenv("XEMU_EVDEV_GUN_DEBUG");
+        enabled = env && env[0] && strcmp(env, "0") != 0;
+    }
+    return enabled;
+}
+
 static void gun_drain_node(EvdevGun *gun, int fd)
 {
     struct input_event evt;
@@ -597,6 +639,15 @@ static void gun_drain_node(EvdevGun *gun, int fd)
         ssize_t n = read(fd, &evt, sizeof(evt));
         if (n != sizeof(evt)) {
             break;
+        }
+
+        if (debug_events() && evt.type != EV_SYN) {
+            static int dumped;
+            if (dumped < 500) {
+                dumped++;
+                fprintf(stderr, "evdev-gun: event type=%u code=%u value=%d\n",
+                        evt.type, evt.code, evt.value);
+            }
         }
 
         switch (evt.type) {
@@ -617,23 +668,58 @@ static void gun_drain_node(EvdevGun *gun, int fd)
             }
             break;
         }
-        case EV_ABS:
-            if (evt.code == ABS_X) {
-                gun->x.value = evt.value;
-            } else if (evt.code == ABS_Y) {
-                gun->y.value = evt.value;
+        case EV_ABS: {
+            /* Some virtual/merged guns emit multitouch codes instead
+             * of plain ABS_X/ABS_Y */
+            bool is_x = evt.code == ABS_X || evt.code == ABS_MT_POSITION_X;
+            bool is_y = evt.code == ABS_Y || evt.code == ABS_MT_POSITION_Y;
+            if (!is_x && !is_y) {
+                break;
             }
-            break;
-        case EV_REL:
-            if (gun->rel_axes) {
-                EvdevGunAxis *axis = (evt.code == REL_X) ? &gun->x :
-                                     (evt.code == REL_Y) ? &gun->y : NULL;
-                if (axis) {
-                    int v = axis->value + evt.value * REL_DELTA_SCALE;
-                    axis->value = MIN(MAX(v, axis->min), axis->max);
+            if (!gun->abs_seen) {
+                gun->abs_seen = true;
+                if (gun->rel_axes && gun_abs_usable(gun)) {
+                    // Descriptor said relative-only was in use, but the
+                    // device does emit absolute positions - prefer them
+                    fprintf(stderr,
+                            "evdev-gun: %s emits absolute positions, "
+                            "switching to absolute aim\n", gun->devnode);
+                    gun_use_abs_axes(gun);
+                }
+            }
+            if (!gun->rel_axes) {
+                if (is_x) {
+                    gun->x.value = evt.value;
+                } else {
+                    gun->y.value = evt.value;
                 }
             }
             break;
+        }
+        case EV_REL: {
+            if (evt.code != REL_X && evt.code != REL_Y) {
+                break;
+            }
+            if (!gun->rel_axes && !gun->abs_seen) {
+                /*
+                 * The device advertises absolute axes but so far only
+                 * emits relative motion (common with merged uinput gun
+                 * devices): integrate deltas instead of waiting for
+                 * ABS events that may never come. Switches back if an
+                 * ABS event does arrive.
+                 */
+                fprintf(stderr,
+                        "evdev-gun: %s emits relative motion, integrating "
+                        "deltas for aim\n", gun->devnode);
+                gun_use_rel_axes(gun);
+            }
+            if (gun->rel_axes) {
+                EvdevGunAxis *axis = (evt.code == REL_X) ? &gun->x : &gun->y;
+                int v = axis->value + evt.value * REL_DELTA_SCALE;
+                axis->value = MIN(MAX(v, axis->min), axis->max);
+            }
+            break;
+        }
         default:
             break;
         }

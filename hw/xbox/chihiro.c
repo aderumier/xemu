@@ -2935,6 +2935,37 @@ void chihiro_mbcom_init(void)
     if(0) printf("[%07lld] Chihiro: mbcom protocol handler initialized (v146 MAME-aligned)\n", TS_MS);
 }
 
+/* Wangan Midnight Maximum Tune (SBHQ = MT1, SBKD = MT2) needs the media
+ * board SYSTEM_TYPE to read back as 0, not the DEVELOPER|GDROM value
+ * other games want, or it stops with "error 15: network firmware
+ * version does not fulfill the game spec". Detected once from boot.id. */
+static bool chihiro_game_is_wangan(void)
+{
+    extern char chihiro_game_dir[1024];
+    static int cached = -1;
+    if (cached >= 0) {
+        return cached;
+    }
+    cached = 0;
+    if (chihiro_game_dir[0]) {
+        char path[1100];
+        snprintf(path, sizeof(path), "%s/boot.id", chihiro_game_dir);
+        FILE *f = fopen(path, "rb");
+        if (f) {
+            uint8_t bid[0x40];
+            if (fread(bid, 1, sizeof(bid), f) == sizeof(bid) &&
+                memcmp(bid, "BTID", 4) == 0) {
+                if (memcmp(&bid[0x30], "SBHQ", 4) == 0 ||
+                    memcmp(&bid[0x30], "SBKD", 4) == 0) {
+                    cached = 1;
+                }
+            }
+            fclose(f);
+        }
+    }
+    return cached;
+}
+
 /* TEMPORARY: Process mbcom command and generate hardcoded responses.
  * On real hardware, the PIC16 (sp5001.bin) handles these commands by
  * querying DIMM board state, GDROM status, and firmware registers.
@@ -2983,8 +3014,13 @@ static void chihiro_mbcom_process(void)
     case 0x0101: /* FW_VER — Cxbx: 0x0317 */
         r[4] = 0x17; r[5] = 0x03; r[6] = 0; r[7] = 0;
         break;
-    case 0x0102: /* SYSTEM_TYPE — low byte must be >=2 to pass board check */
-        r[4] = 0x02; r[5] = 0x80; r[6] = 0; r[7] = 0;
+    case 0x0102: /* SYSTEM_TYPE — 0x8002 (DEVELOPER|GDROM) for most games;
+                  * Wangan needs 0 or it fails with network-firmware error 15 */
+        if (chihiro_game_is_wangan()) {
+            r[4] = 0; r[5] = 0; r[6] = 0; r[7] = 0;
+        } else {
+            r[4] = 0x02; r[5] = 0x80; r[6] = 0; r[7] = 0;
+        }
         break;
     case 0x0103: /* SERIAL — must match SEGABOOT's CheckMediaBoardSerial
                   * format mask "%%%@-##@########" (3 letters, alnum, '-',

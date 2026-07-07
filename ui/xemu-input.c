@@ -527,13 +527,8 @@ static void xemu_input_update_jvs_player(ChihiroJVSState *jvs, int player,
     }
     coin_prev[player] = coin;
 
-    if (offscreen) {
-        jvs->analog[player * 2 + 0] = 0;
-        jvs->analog[player * 2 + 1] = 0;
-    } else {
-        jvs->analog[player * 2 + 0] = (uint16_t)(gx * 0xFFFF);
-        jvs->analog[player * 2 + 1] = (uint16_t)(gy * 0xFFFF);
-    }
+    (void)gx;
+    (void)gy;
 
     /*
      * Standard JVS switch layout (per Cxbx-Reloaded JvsIo):
@@ -573,6 +568,10 @@ typedef struct JvsPlayerAgg {
     bool aim_valid;   /* a source is providing absolute aim this frame */
     bool has_gun;     /* a light gun is assigned to this player */
     float ax, ay;     /* aim, normalized 0..1 (top-left origin) */
+    bool pad_analog;  /* a gamepad is providing driving-style analog */
+    uint16_t steer;   /* JVS analog ch0: left stick X, 0x8000 centered */
+    uint16_t accel;   /* JVS analog ch1: right trigger, 0..0xFFFF */
+    uint16_t brake;   /* JVS analog ch2: left trigger, 0..0xFFFF */
 } JvsPlayerAgg;
 
 /* Add one SDL gamepad's buttons (and, if no other aim source, right-stick
@@ -596,6 +595,17 @@ static void jvs_add_gamepad(JvsPlayerAgg *a, SDL_Gamepad *gp)
         SDL_GetGamepadButton(gp, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER))
         a->push3 = true;
     /* GUIDE is intentionally left for the xemu menu, not JVS service. */
+
+    /* Driving-style analog: left stick steers, triggers are the pedals.
+     * Feeds the JVS analog channels for wheel games (Crazy Taxi, Outrun,
+     * Wangan). Used when the player has no light-gun aim. */
+    int lx = SDL_GetGamepadAxis(gp, SDL_GAMEPAD_AXIS_LEFTX);          /* -32768..32767 */
+    int rt = SDL_GetGamepadAxis(gp, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);  /* 0..32767 */
+    int lt = SDL_GetGamepadAxis(gp, SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
+    a->steer = (uint16_t)MIN(MAX(0x8000 + lx, 0), 0xFFFF);
+    a->accel = (uint16_t)((uint32_t)(rt < 0 ? 0 : rt) * 0xFFFF / 32767);
+    a->brake = (uint16_t)((uint32_t)(lt < 0 ? 0 : lt) * 0xFFFF / 32767);
+    a->pad_analog = true;
 
     /* Gamepad-only aim: right stick deflection maps to screen position.
      * Suppressed when a gun or the mouse already owns this player's aim. */
@@ -707,6 +717,27 @@ static void xemu_input_update_jvs_lightgun(void)
             reload = true;
             trigger = false;
         }
+
+        /*
+         * JVS analog channels. A light gun (or mouse) owns channels
+         * p*2 and p*2+1 as X/Y. Otherwise a gamepad drives driving-style
+         * analog: steering on ch p*2, accelerator on p*2+1, and brake on
+         * ch2 for player 0. Untouched channels stay centered (0x8000).
+         */
+        if (a->aim_valid) {
+            jvs->analog[p * 2 + 0] = (uint16_t)(a->ax * 0xFFFF);
+            jvs->analog[p * 2 + 1] = (uint16_t)(a->ay * 0xFFFF);
+        } else if (a->pad_analog) {
+            jvs->analog[p * 2 + 0] = a->steer;
+            jvs->analog[p * 2 + 1] = a->accel;
+            if (p == 0) {
+                jvs->analog[2] = a->brake;
+            }
+        } else {
+            jvs->analog[p * 2 + 0] = 0;
+            jvs->analog[p * 2 + 1] = 0;
+        }
+
         xemu_input_update_jvs_player(jvs, p, offscreen, trigger, reload,
                                      a->start, a->service, a->coin,
                                      a->push2, a->push3, a->ax, a->ay);

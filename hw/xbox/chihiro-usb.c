@@ -939,6 +939,9 @@ static bool chihiro_backup_path(char *out, size_t out_len)
 
 static void chihiro_backup_load(uint8_t *ic11, size_t len)
 {
+    if (!g_config.sys.chihiro_backup) {
+        return;
+    }
     char path[1024];
     if (!chihiro_backup_path(path, sizeof(path))) {
         return;
@@ -955,6 +958,9 @@ static void chihiro_backup_load(uint8_t *ic11, size_t len)
 
 static void chihiro_backup_save(const uint8_t *ic11, size_t len)
 {
+    if (!g_config.sys.chihiro_backup) {
+        return;
+    }
     char path[1024];
     if (!chihiro_backup_path(path, sizeof(path))) {
         return;

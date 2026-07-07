@@ -356,6 +356,13 @@ sys:
     type: enum
     values: [scart, hdtv, vga, rfu, svideo, composite, none]
     default: hdtv
+  # Persist Chihiro baseboard backup memory (test-menu settings) per game.
+  # Disable for games that hang when a saved backup exists (e.g. titles
+  # that also store bookkeeping in the mediaboard's DIMM backup, which is
+  # not persisted, leaving the two stores inconsistent).
+  chihiro_backup:
+    type: bool
+    default: true
   files:
     bootrom_path: string
     flashrom_path: string

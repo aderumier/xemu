@@ -100,6 +100,8 @@ typedef struct LightGunState {
     uint16_t buttons;
     uint8_t status;
     int16_t axis[2];
+    uint8_t ltrig; // analog trigger slots of the XID report
+    uint8_t rtrig;
 
     // Calibration
     int16_t offsetX;

@@ -50,6 +50,8 @@
 #define EVDEV_GUN_BTN_DPAD_DOWN  (1 << 9)
 #define EVDEV_GUN_BTN_DPAD_LEFT  (1 << 10)
 #define EVDEV_GUN_BTN_DPAD_RIGHT (1 << 11)
+#define EVDEV_GUN_BTN_LTRIGGER   (1 << 12)
+#define EVDEV_GUN_BTN_RTRIGGER   (1 << 13)
 
 #if defined(__linux__) && defined(CONFIG_LIBUDEV)
 

@@ -532,6 +532,8 @@ void xemu_input_update_sdl_kbd_controller_state(ControllerState *state)
 {
     state->gp.buttons = 0;
     state->lg.buttons = 0;
+    state->lg.ltrig = 0;
+    state->lg.rtrig = 0;
     memset(state->gp.axis, 0, sizeof(state->gp.axis));
     memset(state->lg.axis, 0, sizeof(state->lg.axis));
 
@@ -581,6 +583,10 @@ void xemu_input_update_sdl_kbd_controller_state(ControllerState *state)
             state->lg.buttons |= CONTROLLER_BUTTON_DPAD_LEFT;
         if (gunBtn & EVDEV_GUN_BTN_DPAD_RIGHT)
             state->lg.buttons |= CONTROLLER_BUTTON_DPAD_RIGHT;
+        if (gunBtn & EVDEV_GUN_BTN_LTRIGGER)
+            state->lg.ltrig = 0xFF;
+        if (gunBtn & EVDEV_GUN_BTN_RTRIGGER)
+            state->lg.rtrig = 0xFF;
 
         if (kbd[g_config.input.keyboard_controller_scancode_map.a])
             state->lg.buttons |= CONTROLLER_BUTTON_A;
@@ -590,6 +596,10 @@ void xemu_input_update_sdl_kbd_controller_state(ControllerState *state)
             state->lg.buttons |= CONTROLLER_BUTTON_START;
         if (kbd[g_config.input.keyboard_controller_scancode_map.back])
             state->lg.buttons |= CONTROLLER_BUTTON_BACK;
+        if (kbd[g_config.input.keyboard_controller_scancode_map.ltrigger])
+            state->lg.ltrig = 0xFF;
+        if (kbd[g_config.input.keyboard_controller_scancode_map.rtrigger])
+            state->lg.rtrig = 0xFF;
 
     } else if (strcmp(bound_driver, DRIVER_LIGHT_GUN) == 0) {
         uint32_t mouseBtn = SDL_GetMouseState(&m_mouseX, &m_mouseY);
@@ -671,6 +681,10 @@ void xemu_input_update_sdl_kbd_controller_state(ControllerState *state)
             state->lg.buttons |= CONTROLLER_BUTTON_DPAD_LEFT;
         if (kbd[g_config.input.keyboard_controller_scancode_map.dpad_right])
             state->lg.buttons |= CONTROLLER_BUTTON_DPAD_RIGHT;
+        if (kbd[g_config.input.keyboard_controller_scancode_map.ltrigger])
+            state->lg.ltrig = 0xFF;
+        if (kbd[g_config.input.keyboard_controller_scancode_map.rtrigger])
+            state->lg.rtrig = 0xFF;
     } else {
 #define KBD_STATE(btn) \
         (kbd[g_config.input.keyboard_controller_scancode_map.btn])
@@ -721,6 +735,8 @@ void xemu_input_update_sdl_controller_state(ControllerState *state)
 {
     state->gp.buttons = 0;
     state->lg.buttons = 0;
+    state->lg.ltrig = 0;
+    state->lg.rtrig = 0;
     memset(state->gp.axis, 0, sizeof(state->gp.axis));
 
     if (state->bound < 0)
@@ -757,6 +773,10 @@ void xemu_input_update_sdl_controller_state(ControllerState *state)
             state->sdl_gamepad, SDL_GAMEPAD_AXIS_LEFTX);
         state->lg.axis[1] = SDL_GetGamepadAxis(
             state->sdl_gamepad, SDL_GAMEPAD_AXIS_LEFTY);
+        state->lg.ltrig = SDL_GetGamepadAxis(state->sdl_gamepad,
+                              SDL_GAMEPAD_AXIS_LEFT_TRIGGER) >> 7;
+        state->lg.rtrig = SDL_GetGamepadAxis(state->sdl_gamepad,
+                              SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) >> 7;
 
     } else {
 #define SDL_MASK_BUTTON(state, btn, idx)                  \

@@ -213,6 +213,10 @@ static void parse_button_bindings(void)
           EVDEV_GUN_BTN_DPAD_LEFT, "dpad_left" },
         { g_config.input.lightgun.gun_buttons.dpad_right,
           EVDEV_GUN_BTN_DPAD_RIGHT, "dpad_right" },
+        { g_config.input.lightgun.gun_buttons.ltrigger,
+          EVDEV_GUN_BTN_LTRIGGER, "ltrigger" },
+        { g_config.input.lightgun.gun_buttons.rtrigger,
+          EVDEV_GUN_BTN_RTRIGGER, "rtrigger" },
     };
 
     code_map_len = 0;

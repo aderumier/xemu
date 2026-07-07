@@ -113,6 +113,10 @@ input:
       dpad_right:
         type: string
         default: 'BTN_8'
+      # Analog trigger slots of the light gun report (full pull when
+      # pressed). Some games read actions like scope zoom from these.
+      ltrigger: string
+      rtrigger: string
   gamecontrollerdb_path: string
   auto_bind:
     type: bool

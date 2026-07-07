@@ -34,7 +34,7 @@ typedef struct XIDLightGunReport {
     uint8_t bLength;
     uint8_t wButtons;
     uint8_t wState;
-    uint8_t bAnalogButtons[8]; // The last 2 are unused
+    uint8_t bAnalogButtons[8]; // The last 2 are the trigger slots
     int16_t sThumbLX;
     int16_t sThumbLY;
 } QEMU_PACKED XIDLightGunReport;
@@ -165,6 +165,8 @@ static void update_lg_input(USBXIDLightGunState *s)
         (state->lg.buttons & CONTROLLER_BUTTON_BLACK) ? 0xFF : 0x00;
     s->in_state.bAnalogButtons[5] =
         (state->lg.buttons & CONTROLLER_BUTTON_WHITE) ? 0xFF : 0x00;
+    s->in_state.bAnalogButtons[6] = state->lg.ltrig;
+    s->in_state.bAnalogButtons[7] = state->lg.rtrig;
 
     s->in_state.sThumbLX = state->lg.axis[0];
     s->in_state.sThumbLY = state->lg.axis[1];

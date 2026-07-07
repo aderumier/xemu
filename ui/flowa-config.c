@@ -82,7 +82,7 @@ static const char *default_ini =
 "\n"
 "[graphics]\n"
 "; xemu graphics settings. An EMPTY value = keep whatever is saved in\n"
-"; xemu itself. Use the Flowa GunSetup configurator to change them.\n"
+"; xemu itself. Use the Code Flow GunSetup configurator to change them.\n"
 "; renderer: null, opengl or vulkan\n"
 "renderer =\n"
 "; resolution_scale: 1 to 10 (internal resolution multiplier)\n"
@@ -136,7 +136,7 @@ static const char *default_ini =
 "\n"
 "[players]\n"
 "; Bind a specific pointer device to each controller port. Use the\n"
-"; Flowa GunSetup configurator to fill these automatically, or leave\n"
+"; Code Flow GunSetup configurator to fill these automatically, or leave\n"
 "; empty to keep the bindings saved from the xemu Input menu.\n"
 "; portN_device: device id, e.g. mouse:1a2b3c4d (or: keyboard)\n"
 "; portN_driver: lightgun, duke or controller-s\n"
@@ -147,7 +147,35 @@ static const char *default_ini =
 "port3_device =\n"
 "port3_driver =\n"
 "port4_device =\n"
-"port4_driver =\n";
+"port4_driver =\n"
+"\n"
+"[mapping]\n"
+"; Custom bindings for the lightgun port. EMPTY = default mapping:\n"
+";   mouse LEFT = trigger (A), RIGHT = B, MIDDLE = Start,\n"
+";   X1/side = Back, X2/side = X. Aim always follows the gun/mouse\n"
+";   selected in [players] - these only remap BUTTONS.\n"
+"; Use the Code Flow GunSetup configurator (Mapping tab) to fill these.\n"
+"; Formats: mouse:<id>:<left|right|middle|x1|x2>  (any detected mouse)\n"
+";          key:<name>  (keyboard key, e.g. key:Up, key:Return, key:A)\n"
+"map_trigger =\n"
+"map_b =\n"
+"map_x =\n"
+"map_start =\n"
+"map_back =\n"
+"map_dpad_up =\n"
+"map_dpad_down =\n"
+"map_dpad_left =\n"
+"map_dpad_right =\n"
+"; Additional pad buttons (service/extra modes in some games).\n"
+"; ltrig/rtrig are the analog triggers: a mapped press = full pull.\n"
+"map_y =\n"
+"map_white =\n"
+"map_black =\n"
+"map_lstick =\n"
+"map_rstick =\n"
+"map_ltrig =\n"
+"map_rtrig =\n"
+"map_guide =\n";
 
 static char *get_ini_path(void)
 {
@@ -368,7 +396,48 @@ void flowa_config_load(void)
             }
         } else if (strcmp(key, "iso_path") == 0) {
             if (*val) {
-                xemu_settings_set_string(&g_config.sys.files.dvd_path, val);
+                /* Relative paths are resolved against the folder holding
+                 * xemu.exe so the whole package stays portable. */
+                if (!g_path_is_absolute(val)) {
+                    const char *base = SDL_GetBasePath();
+                    char *abs =
+                        g_strdup_printf("%s%s", base ? base : "", val);
+                    xemu_settings_set_string(&g_config.sys.files.dvd_path,
+                                             abs);
+                    g_free(abs);
+                } else {
+                    xemu_settings_set_string(&g_config.sys.files.dvd_path,
+                                             val);
+                }
+            }
+        } else if (strncmp(key, "map_", 4) == 0) {
+            static const struct {
+                const char *name;
+                const char **cfg;
+            } map_keys[] = {
+                { "trigger", &g_config.input.lightgun_mapping.trigger },
+                { "b", &g_config.input.lightgun_mapping.b },
+                { "x", &g_config.input.lightgun_mapping.x },
+                { "start", &g_config.input.lightgun_mapping.start },
+                { "back", &g_config.input.lightgun_mapping.back },
+                { "dpad_up", &g_config.input.lightgun_mapping.dpad_up },
+                { "dpad_down", &g_config.input.lightgun_mapping.dpad_down },
+                { "dpad_left", &g_config.input.lightgun_mapping.dpad_left },
+                { "dpad_right", &g_config.input.lightgun_mapping.dpad_right },
+                { "y", &g_config.input.lightgun_mapping.y },
+                { "white", &g_config.input.lightgun_mapping.white },
+                { "black", &g_config.input.lightgun_mapping.black },
+                { "lstick", &g_config.input.lightgun_mapping.lstick },
+                { "rstick", &g_config.input.lightgun_mapping.rstick },
+                { "ltrig", &g_config.input.lightgun_mapping.ltrig },
+                { "rtrig", &g_config.input.lightgun_mapping.rtrig },
+                { "guide", &g_config.input.lightgun_mapping.guide },
+            };
+            for (int i = 0; i < ARRAY_SIZE(map_keys); i++) {
+                if (strcmp(key + 4, map_keys[i].name) == 0) {
+                    xemu_settings_set_string(map_keys[i].cfg, val);
+                    break;
+                }
             }
         } else if (strncmp(key, "port", 4) == 0 && key[4] >= '1' &&
                    key[4] <= '4') {

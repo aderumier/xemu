@@ -1,7 +1,7 @@
 //
-// Flowa GunSetup - xemu Sinden Mod Configurator
+// Code Flow GunSetup v3.0 - xemu LightGun Edition Configurator
 //
-// Made by flowa - https://www.youtube.com/@flowachannel4731
+// Made by Code Flow - https://www.youtube.com/@flowachannel4731
 // Created in collaboration with the Light Gun Lunatics community.
 //
 // Single-file WinForms app, compiled with the C# compiler bundled with
@@ -20,6 +20,13 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Forms;
+
+[assembly: System.Reflection.AssemblyTitle("Code Flow GunSetup")]
+[assembly: System.Reflection.AssemblyProduct("Code Flow GunSetup")]
+[assembly: System.Reflection.AssemblyDescription(
+    "xemu LightGun Edition Configurator")]
+[assembly: System.Reflection.AssemblyVersion("3.0.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("3.0.0.0")]
 
 namespace FlowaGunSetup
 {
@@ -80,6 +87,97 @@ namespace FlowaGunSetup
         [DllImport("hid.dll", CharSet = CharSet.Unicode)]
         static extern bool HidD_GetProductString(IntPtr device,
             StringBuilder buffer, uint bufferLength);
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct RAWINPUTDEVICE
+        {
+            public ushort usUsagePage;
+            public ushort usUsage;
+            public uint dwFlags;
+            public IntPtr hwndTarget;
+        }
+
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern bool RegisterRawInputDevices(
+            RAWINPUTDEVICE[] devices, uint numDevices, uint size);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern uint GetRawInputData(IntPtr hRawInput, uint command,
+            byte[] data, ref uint size, uint headerSize);
+
+        // Receive WM_INPUT for mice on the given window (used by the
+        // Mapping tab to capture a button press with device identity)
+        public static bool RegisterForMouseInput(IntPtr hwnd)
+        {
+            RAWINPUTDEVICE[] rid = new RAWINPUTDEVICE[1];
+            rid[0].usUsagePage = 0x01;
+            rid[0].usUsage = 0x02; // generic mouse
+            rid[0].dwFlags = 0;    // deliver while we have focus
+            rid[0].hwndTarget = hwnd;
+            return RegisterRawInputDevices(rid, 1,
+                (uint)Marshal.SizeOf(typeof(RAWINPUTDEVICE)));
+        }
+
+        // Parse a WM_INPUT message; returns true when a mouse button DOWN
+        // was seen, with the xemu-compatible spec ("mouse:<id>:<button>"),
+        // a friendly button name and the source device path.
+        public static bool TryReadMouseButtonDown(IntPtr lParam,
+            out string spec, out string buttonName, out string devicePath)
+        {
+            spec = null;
+            buttonName = null;
+            devicePath = null;
+
+            uint size = 0;
+            const uint RID_INPUT = 0x10000003;
+            uint headerSize = (uint)(IntPtr.Size == 8 ? 24 : 16);
+            GetRawInputData(lParam, RID_INPUT, null, ref size, headerSize);
+            if (size == 0)
+                return false;
+            byte[] buf = new byte[size];
+            if (GetRawInputData(lParam, RID_INPUT, buf, ref size,
+                                headerSize) != size)
+                return false;
+
+            uint dwType = BitConverter.ToUInt32(buf, 0);
+            if (dwType != RIM_TYPEMOUSE)
+                return false;
+
+            IntPtr hDevice = IntPtr.Size == 8
+                ? (IntPtr)BitConverter.ToInt64(buf, 8)
+                : (IntPtr)BitConverter.ToInt32(buf, 8);
+            // RAWMOUSE.usButtonFlags: header + usFlags(2) + pad(2)
+            int flagsOffset = (int)headerSize + 4;
+            if (buf.Length < flagsOffset + 2)
+                return false;
+            ushort buttonFlags = BitConverter.ToUInt16(buf, flagsOffset);
+
+            string btn = null;
+            if ((buttonFlags & 0x0001) != 0) btn = "left";
+            else if ((buttonFlags & 0x0004) != 0) btn = "right";
+            else if ((buttonFlags & 0x0010) != 0) btn = "middle";
+            else if ((buttonFlags & 0x0040) != 0) btn = "x1";
+            else if ((buttonFlags & 0x0100) != 0) btn = "x2";
+            if (btn == null)
+                return false;
+
+            string path = GetDevicePath(hDevice);
+            if (path == null)
+                return false;
+
+            spec = DeviceIdForPath(path) + ":" + btn;
+            buttonName = btn.ToUpperInvariant();
+            devicePath = path;
+            return true;
+        }
+
+        public static string FriendlyNameForPath(string path)
+        {
+            string name = GetProductName(path);
+            if (name == null || name.Length == 0)
+                name = "HID Mouse";
+            return name;
+        }
 
         // Must match the FNV-1a hash in xemu's ui/xemu-rawinput.c,
         // computed over the UTF-8 bytes of the device path
@@ -210,6 +308,36 @@ namespace FlowaGunSetup
         string[][] gfxValues;
         ComboBox[] gfxCombo;
 
+        // Mapping tab: bindable gun BUTTONS ([mapping] in the INI). The
+        // aim itself is NOT mappable by design: it always follows the raw
+        // input device selected in Players.
+        static readonly string[] MapKeys = {
+            "map_trigger", "map_b", "map_x", "map_start", "map_back",
+            "map_dpad_up", "map_dpad_down", "map_dpad_left",
+            "map_dpad_right",
+            "map_y", "map_white", "map_black", "map_lstick", "map_rstick",
+            "map_ltrig", "map_rtrig", "map_guide"
+        };
+        static readonly string[] MapLabels = {
+            "Trigger  (A)", "B  (grip / reload)", "X", "Start", "Back",
+            "D-Pad Up", "D-Pad Down", "D-Pad Left", "D-Pad Right",
+            "Y", "White", "Black", "L-Stick Click", "R-Stick Click",
+            "Left Trigger", "Right Trigger", "Guide (xemu menu)"
+        };
+        static readonly string[] MapDefaults = {
+            "mouse LEFT", "mouse RIGHT", "mouse X2 (side)",
+            "mouse MIDDLE", "mouse X1 (side)", "", "", "", "",
+            "", "", "", "", "", "", "", ""
+        };
+        const int MapAdditionalFrom = 9; // index of the first extra slot
+        string[] mapValues = new string[17];
+        string[] mapLoadedValues = new string[17]; // as loaded at startup
+        Button[] mapButtons = new Button[17];
+        int mapCapturing = -1;
+        int mapCountdown;
+        Timer mapTimer;
+        DateTime mapLastCaptureEnd = DateTime.MinValue;
+
         static readonly string[] MachineDirs =
             { "bios", "mcpxbootrom", "harddisk", "eeprom" };
         static readonly string[] MachineLabels = {
@@ -226,7 +354,8 @@ namespace FlowaGunSetup
             baseDir = AppDomain.CurrentDomain.BaseDirectory;
             iniPath = Path.Combine(baseDir, "flowa_config.ini");
 
-            Text = "Flowa GunSetup - xemu Sinden Mod Configurator";
+            Text = "Code Flow GunSetup v3.0";
+            KeyPreview = true; // capture keys for the Mapping tab
             BackColor = BgColor;
             ForeColor = TextColor;
             Font = new Font("Segoe UI", 9f);
@@ -247,6 +376,10 @@ namespace FlowaGunSetup
             RefreshDevices();
             LoadIni();
             RefreshMachineStatus();
+
+            // Receive WM_INPUT so the Mapping tab can capture mouse
+            // buttons together with the device they came from
+            RawInputDevices.RegisterForMouseInput(this.Handle);
 
             // Live-refresh the machine files status so the labels react
             // as soon as files are dropped into the folders
@@ -314,10 +447,11 @@ namespace FlowaGunSetup
         void BuildUi()
         {
             // Header
-            Label title = MakeLabel("FLOWA  GUNSETUP", 20, 14, AccentColor);
+            Label title = MakeLabel("CODE FLOW  GUNSETUP  v3.0", 20, 14,
+                                    AccentColor);
             title.Font = new Font("Segoe UI", 16f, FontStyle.Bold);
             Label sub = MakeLabel(
-                "xemu Sinden Mod Configurator - lightgun edition",
+                "xemu LightGun Edition Configurator",
                 24, 46, DimColor);
             sub.Font = new Font("Segoe UI", 9f, FontStyle.Italic);
 
@@ -332,6 +466,10 @@ namespace FlowaGunSetup
             gfxPage.BackColor = BgColor;
             tabs.TabPages.Add(gfxPage);
             BuildGraphicsTab(gfxPage);
+            TabPage mapPage = new TabPage("Mapping");
+            mapPage.BackColor = BgColor;
+            tabs.TabPages.Add(mapPage);
+            BuildMappingTab(mapPage);
 
             // ---- Game group
             GroupBox game = MakeGroup(setupPage, "Game", 8, 6, 748, 84);
@@ -482,10 +620,17 @@ namespace FlowaGunSetup
         {
             Dictionary<string, string> map =
                 new Dictionary<string, string>();
+            // Portable mode first: xemu.toml next to xemu.exe wins (this
+            // is how xemu itself resolves it), AppData as fallback
             string path = Path.Combine(
-                Environment.GetFolderPath(
-                    Environment.SpecialFolder.ApplicationData),
-                "xemu", "xemu", "xemu.toml");
+                AppDomain.CurrentDomain.BaseDirectory, "xemu.toml");
+            if (!File.Exists(path))
+            {
+                path = Path.Combine(
+                    Environment.GetFolderPath(
+                        Environment.SpecialFolder.ApplicationData),
+                    "xemu", "xemu", "xemu.toml");
+            }
             if (!File.Exists(path))
                 return map;
             string section = "";
@@ -670,6 +815,283 @@ namespace FlowaGunSetup
             page.Controls.Add(note);
         }
 
+        // Mapping tab: click a slot, then press the desired key or mouse
+        // button within 10 seconds to bind it. Buttons only - the AIM is
+        // locked to the raw input device selected in Players.
+        void BuildMappingTab(TabPage page)
+        {
+            Label head = new Label();
+            head.Text = "Gun button mapping (leave empty for the defaults)";
+            head.AutoSize = true;
+            head.Location = new Point(18, 10);
+            head.ForeColor = AccentColor;
+            page.Controls.Add(head);
+
+            const int rowH = 27;
+            const int rowsTop = 34;
+            const int extraGap = 22; // room for the "Additional" divider
+
+            for (int i = 0; i < MapKeys.Length; i++)
+            {
+                int y = rowsTop + i * rowH
+                        + (i >= MapAdditionalFrom ? extraGap : 0);
+
+                if (i == MapAdditionalFrom)
+                {
+                    Label add = new Label();
+                    add.Text = "ADDITIONAL  (service / extra modes in "
+                        + "some games)";
+                    add.AutoSize = true;
+                    add.Location = new Point(18, y - extraGap + 4);
+                    add.ForeColor = AccentColor;
+                    page.Controls.Add(add);
+                }
+
+                Label l = new Label();
+                l.Text = MapLabels[i];
+                l.AutoSize = true;
+                l.Location = new Point(18, y + 4);
+                l.ForeColor = TextColor;
+                page.Controls.Add(l);
+
+                Button b = MakeButton(page, "", 170, y, 360, 24);
+                int idx = i;
+                b.Click += delegate(object s, EventArgs e)
+                {
+                    OnMapBindClick(idx);
+                };
+                mapButtons[i] = b;
+
+                Button clr = MakeButton(page, "X", 538, y, 30, 24);
+                clr.ForeColor = Color.IndianRed;
+                clr.Click += delegate(object s, EventArgs e)
+                {
+                    OnMapClearClick(idx);
+                };
+
+                Button def = MakeButton(page, "Default", 574, y, 64, 24);
+                def.Click += delegate(object s, EventArgs e)
+                {
+                    OnMapDefaultClick(idx);
+                };
+            }
+
+            Label note = new Label();
+            note.Text =
+                "Click a slot, then press the key or mouse button you want "
+                + "within 10 seconds (any detected\nmouse works). X = no "
+                + "assignment, Default = value this window was opened "
+                + "with.\nThe AIM is not mappable on purpose: it always "
+                + "follows the device selected in Players.";
+            note.AutoSize = true;
+            note.Location = new Point(
+                18, rowsTop + MapKeys.Length * rowH + extraGap + 8);
+            note.ForeColor = DimColor;
+            page.Controls.Add(note);
+
+            mapTimer = new Timer();
+            mapTimer.Interval = 1000;
+            mapTimer.Tick += new EventHandler(OnMapTimerTick);
+
+            RefreshMapButtons();
+        }
+
+        string PrettyMapValue(int i)
+        {
+            string v = mapValues[i];
+            if (v == null || v.Length == 0)
+            {
+                return MapDefaults[i].Length > 0
+                    ? "(default: " + MapDefaults[i] + ")"
+                    : "(not set)";
+            }
+            if (v.StartsWith("key:"))
+            {
+                return "Keyboard  -  " + v.Substring(4);
+            }
+            if (v.StartsWith("mouse:"))
+            {
+                int c = v.LastIndexOf(':');
+                if (c > 6)
+                {
+                    string id = v.Substring(0, c);
+                    string btn = v.Substring(c + 1).ToUpperInvariant();
+                    string dev = id;
+                    foreach (MouseDevice m in mice)
+                    {
+                        if (m.Id == id) { dev = m.Name; break; }
+                    }
+                    return btn + "  @  " + dev;
+                }
+            }
+            return v;
+        }
+
+        void RefreshMapButtons()
+        {
+            for (int i = 0; i < MapKeys.Length; i++)
+            {
+                if (mapButtons[i] != null && mapCapturing != i)
+                    mapButtons[i].Text = PrettyMapValue(i);
+            }
+        }
+
+        void OnMapBindClick(int idx)
+        {
+            // A capture that just ended on a mouse click also delivers the
+            // Click event to this very button: swallow it so binding the
+            // left button does not instantly restart the capture.
+            if ((DateTime.Now - mapLastCaptureEnd).TotalMilliseconds < 400)
+                return;
+            if (mapCapturing >= 0)
+                EndMapCapture(null); // cancel any previous capture
+            mapCapturing = idx;
+            mapCountdown = 10;
+            mapButtons[idx].Text =
+                "Press a key or mouse button...  " + mapCountdown;
+            mapButtons[idx].ForeColor = Color.Orange;
+            mapTimer.Start();
+        }
+
+        void OnMapClearClick(int idx)
+        {
+            if (mapCapturing == idx)
+                EndMapCapture(null);
+            mapValues[idx] = "";
+            RefreshMapButtons();
+        }
+
+        void OnMapDefaultClick(int idx)
+        {
+            if (mapCapturing == idx)
+                EndMapCapture(null);
+            mapValues[idx] = mapLoadedValues[idx] == null
+                ? "" : mapLoadedValues[idx];
+            RefreshMapButtons();
+        }
+
+        void OnMapTimerTick(object sender, EventArgs e)
+        {
+            if (mapCapturing < 0)
+            {
+                mapTimer.Stop();
+                return;
+            }
+            mapCountdown--;
+            if (mapCountdown <= 0)
+            {
+                EndMapCapture(null); // timeout: keep the old binding
+            }
+            else
+            {
+                mapButtons[mapCapturing].Text =
+                    "Press a key or mouse button...  " + mapCountdown;
+            }
+        }
+
+        void EndMapCapture(string newValue)
+        {
+            mapTimer.Stop();
+            mapLastCaptureEnd = DateTime.Now;
+            if (mapCapturing >= 0)
+            {
+                if (newValue != null)
+                    mapValues[mapCapturing] = newValue;
+                mapButtons[mapCapturing].ForeColor = TextColor;
+                int done = mapCapturing;
+                mapCapturing = -1;
+                mapButtons[done].Text = PrettyMapValue(done);
+            }
+        }
+
+        // Arrow keys (and other dialog keys) are eaten by WinForms focus
+        // navigation before KeyDown: intercept them here so the D-Pad can
+        // be bound to the keyboard arrows.
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (mapCapturing >= 0)
+            {
+                string name = SdlKeyName(keyData & Keys.KeyCode);
+                if (name != null)
+                {
+                    EndMapCapture("key:" + name);
+                    return true;
+                }
+            }
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+
+        // Windows VK -> SDL key name (what xemu feeds into
+        // SDL_GetScancodeFromName). Covers the common keys.
+        static string SdlKeyName(Keys k)
+        {
+            if (k >= Keys.A && k <= Keys.Z)
+                return k.ToString();
+            if (k >= Keys.D0 && k <= Keys.D9)
+                return ((int)(k - Keys.D0)).ToString();
+            if (k >= Keys.F1 && k <= Keys.F12)
+                return k.ToString();
+            if (k >= Keys.NumPad0 && k <= Keys.NumPad9)
+                return "Keypad " + (int)(k - Keys.NumPad0);
+            switch (k)
+            {
+                case Keys.Up: return "Up";
+                case Keys.Down: return "Down";
+                case Keys.Left: return "Left";
+                case Keys.Right: return "Right";
+                case Keys.Return: return "Return";
+                case Keys.Space: return "Space";
+                case Keys.Escape: return "Escape";
+                case Keys.Tab: return "Tab";
+                case Keys.Back: return "Backspace";
+                case Keys.ShiftKey: return "Left Shift";
+                case Keys.ControlKey: return "Left Ctrl";
+                case Keys.Menu: return "Left Alt";
+                case Keys.OemMinus: return "-";
+                case Keys.Oemplus: return "=";
+                case Keys.Oemcomma: return ",";
+                case Keys.OemPeriod: return ".";
+                case Keys.PageUp: return "PageUp";
+                case Keys.PageDown: return "PageDown";
+                case Keys.Home: return "Home";
+                case Keys.End: return "End";
+                case Keys.Insert: return "Insert";
+                case Keys.Delete: return "Delete";
+                default: return null;
+            }
+        }
+
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            if (mapCapturing >= 0)
+            {
+                string name = SdlKeyName(e.KeyCode);
+                if (name != null)
+                {
+                    EndMapCapture("key:" + name);
+                    e.Handled = true;
+                    e.SuppressKeyPress = true;
+                    return;
+                }
+            }
+            base.OnKeyDown(e);
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            const int WM_INPUT = 0x00FF;
+            if (m.Msg == WM_INPUT && mapCapturing >= 0)
+            {
+                string spec, btn, path;
+                if (RawInputDevices.TryReadMouseButtonDown(
+                        m.LParam, out spec, out btn, out path))
+                {
+                    EndMapCapture(spec);
+                }
+            }
+            base.WndProc(ref m);
+        }
+
         void MakeGunSliders(GroupBox gun)
         {
             Label sl = new Label();
@@ -777,7 +1199,15 @@ namespace FlowaGunSetup
             d.Filter = "Xbox disc images (*.iso;*.xiso)|*.iso;*.xiso|"
                 + "All files (*.*)|*.*";
             if (d.ShowDialog(this) == DialogResult.OK)
-                isoBox.Text = d.FileName;
+            {
+                // Files inside the app folder are shown (and saved) with a
+                // relative path so the package stays portable
+                string p = d.FileName;
+                if (p.StartsWith(baseDir,
+                                 StringComparison.OrdinalIgnoreCase))
+                    p = p.Substring(baseDir.Length);
+                isoBox.Text = p;
+            }
         }
 
         void OnRefreshDevices(object sender, EventArgs e)
@@ -1050,6 +1480,13 @@ namespace FlowaGunSetup
 
             isoBox.Text = ParseString(map, "iso_path");
 
+            for (int i = 0; i < MapKeys.Length; i++)
+            {
+                mapValues[i] = ParseString(map, MapKeys[i]);
+                mapLoadedValues[i] = mapValues[i];
+            }
+            RefreshMapButtons();
+
             for (int i = 0; i < 4; i++)
             {
                 SelectDeviceId(i,
@@ -1141,8 +1578,16 @@ namespace FlowaGunSetup
             w("disable_rclick_menu = " + (rClickCk.Checked ? "1" : "0"));
             w("");
             w("[game]");
-            w("; Full path of the game ISO/XISO (region must match the BIOS!)");
-            w("iso_path = " + isoBox.Text);
+            w("; Path of the game ISO/XISO (region must match the BIOS!).");
+            w("; Paths inside the xemu folder are saved relative, so the");
+            w("; whole package stays 100% portable.");
+            string iso = isoBox.Text;
+            if (iso.Length > 0 &&
+                iso.StartsWith(baseDir, StringComparison.OrdinalIgnoreCase))
+            {
+                iso = iso.Substring(baseDir.Length);
+            }
+            w("iso_path = " + iso);
             w("");
             w("[players]");
             w("; portN_device: device id (mouse:xxxxxxxx or keyboard)");
@@ -1154,6 +1599,16 @@ namespace FlowaGunSetup
                     Math.Max(0, driverCombo[i].SelectedIndex)];
                 w("port" + (i + 1) + "_device = " + (dev ?? ""));
                 w("port" + (i + 1) + "_driver = " + drv);
+            }
+            w("");
+            w("[mapping]");
+            w("; Gun BUTTON bindings (aim is not mappable: it follows the");
+            w("; raw input device selected above). Empty = default.");
+            w("; mouse:<id>:<left|right|middle|x1|x2> or key:<name>");
+            for (int i = 0; i < MapKeys.Length; i++)
+            {
+                w(MapKeys[i] + " = "
+                  + (mapValues[i] == null ? "" : mapValues[i]));
             }
 
             File.WriteAllText(iniPath, sb.ToString(),

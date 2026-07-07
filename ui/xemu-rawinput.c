@@ -26,11 +26,13 @@
 #include "xemu-rawinput.h"
 #include "xemu-input.h"
 #include "xemu-notifications.h"
+#include "xemu-settings.h"
 
 #ifdef _WIN32
 
 #include <math.h>
 #include <windows.h>
+#include <SDL3/SDL.h>
 #include <SDL3/SDL_system.h>
 
 // #define DEBUG_RAWINPUT
@@ -67,6 +69,94 @@ static ControllerState *rawinput_find_controller(HANDLE hdev)
         }
     }
     return NULL;
+}
+
+// ---------------------------------------------------------------------------
+// Custom button mapping ([mapping] section of flowa_config.ini, filled by
+// the Code Flow GunSetup configurator). Empty specs keep the default fixed
+// mouse mapping, so this whole feature is inert unless configured.
+// Spec formats: "mouse:<hash>:<left|right|middle|x1|x2>" (any detected
+// mouse, not only the aiming one) or "key:<SDL key name>".
+
+typedef enum {
+    MAP_SRC_NONE = 0,
+    MAP_SRC_MOUSE,
+    MAP_SRC_KEY,
+} MapSourceKind;
+
+typedef struct MapSource {
+    MapSourceKind kind;
+    char mouse_guid[20]; // "mouse:xxxxxxxx"
+    uint32_t mouse_button; // XEMU_RAWINPUT_BUTTON_*
+    SDL_Scancode scancode;
+} MapSource;
+
+typedef struct MapSlot {
+    const char **spec; // config string
+    const char *parsed_from; // spec value the cache was built from
+    uint32_t def_mouse_button; // default source (0 = none)
+    uint32_t controller_button; // 0 when the target is an axis
+    int axis; // CONTROLLER_AXIS_* target, -1 = none (analog triggers)
+    MapSource src;
+} MapSlot;
+
+static void map_parse(MapSource *out, const char *spec)
+{
+    memset(out, 0, sizeof(*out));
+
+    if (strncmp(spec, "mouse:", 6) == 0) {
+        const char *btn = strchr(spec + 6, ':');
+        if (btn == NULL || (size_t)(btn - spec) >= sizeof(out->mouse_guid)) {
+            return;
+        }
+        memcpy(out->mouse_guid, spec, btn - spec);
+        out->mouse_guid[btn - spec] = '\0';
+        btn++;
+        if (strcmp(btn, "left") == 0) {
+            out->mouse_button = XEMU_RAWINPUT_BUTTON_LEFT;
+        } else if (strcmp(btn, "right") == 0) {
+            out->mouse_button = XEMU_RAWINPUT_BUTTON_RIGHT;
+        } else if (strcmp(btn, "middle") == 0) {
+            out->mouse_button = XEMU_RAWINPUT_BUTTON_MIDDLE;
+        } else if (strcmp(btn, "x1") == 0) {
+            out->mouse_button = XEMU_RAWINPUT_BUTTON_X1;
+        } else if (strcmp(btn, "x2") == 0) {
+            out->mouse_button = XEMU_RAWINPUT_BUTTON_X2;
+        } else {
+            return;
+        }
+        out->kind = MAP_SRC_MOUSE;
+    } else if (strncmp(spec, "key:", 4) == 0) {
+        out->scancode = SDL_GetScancodeFromName(spec + 4);
+        if (out->scancode != SDL_SCANCODE_UNKNOWN) {
+            out->kind = MAP_SRC_KEY;
+        }
+    }
+}
+
+static bool map_source_pressed(const MapSource *src, ControllerState *own)
+{
+    switch (src->kind) {
+    case MAP_SRC_MOUSE: {
+        if (strcmp(own->rawinput_guid, src->mouse_guid) == 0) {
+            return (own->rawinput_buttons & src->mouse_button) != 0;
+        }
+        ControllerState *iter;
+        QTAILQ_FOREACH(iter, &available_controllers, entry) {
+            if (iter->type == INPUT_DEVICE_RAWINPUT_MOUSE &&
+                strcmp(iter->rawinput_guid, src->mouse_guid) == 0) {
+                return (iter->rawinput_buttons & src->mouse_button) != 0;
+            }
+        }
+        return false;
+    }
+    case MAP_SRC_KEY: {
+        const bool *kb = SDL_GetKeyboardState(NULL);
+        return kb != NULL && kb[src->scancode];
+    }
+    default:
+        return false;
+    }
 }
 
 static char *rawinput_get_device_path(HANDLE hdev)
@@ -376,21 +466,68 @@ void xemu_rawinput_update_controller_state(ControllerState *state)
     state->buttons = 0;
     memset(state->axis, 0, sizeof(state->axis));
 
+    // Button mapping: each function uses its custom [mapping] binding when
+    // configured, otherwise the default mouse button (dpad has no default).
+    static MapSlot map_slots[] = {
+        { &g_config.input.lightgun_mapping.trigger, NULL,
+          XEMU_RAWINPUT_BUTTON_LEFT, CONTROLLER_BUTTON_A, -1 },
+        { &g_config.input.lightgun_mapping.b, NULL,
+          XEMU_RAWINPUT_BUTTON_RIGHT, CONTROLLER_BUTTON_B, -1 },
+        { &g_config.input.lightgun_mapping.start, NULL,
+          XEMU_RAWINPUT_BUTTON_MIDDLE, CONTROLLER_BUTTON_START, -1 },
+        { &g_config.input.lightgun_mapping.back, NULL,
+          XEMU_RAWINPUT_BUTTON_X1, CONTROLLER_BUTTON_BACK, -1 },
+        { &g_config.input.lightgun_mapping.x, NULL,
+          XEMU_RAWINPUT_BUTTON_X2, CONTROLLER_BUTTON_X, -1 },
+        { &g_config.input.lightgun_mapping.dpad_up, NULL, 0,
+          CONTROLLER_BUTTON_DPAD_UP, -1 },
+        { &g_config.input.lightgun_mapping.dpad_down, NULL, 0,
+          CONTROLLER_BUTTON_DPAD_DOWN, -1 },
+        { &g_config.input.lightgun_mapping.dpad_left, NULL, 0,
+          CONTROLLER_BUTTON_DPAD_LEFT, -1 },
+        { &g_config.input.lightgun_mapping.dpad_right, NULL, 0,
+          CONTROLLER_BUTTON_DPAD_RIGHT, -1 },
+        { &g_config.input.lightgun_mapping.y, NULL, 0,
+          CONTROLLER_BUTTON_Y, -1 },
+        { &g_config.input.lightgun_mapping.white, NULL, 0,
+          CONTROLLER_BUTTON_WHITE, -1 },
+        { &g_config.input.lightgun_mapping.black, NULL, 0,
+          CONTROLLER_BUTTON_BLACK, -1 },
+        { &g_config.input.lightgun_mapping.lstick, NULL, 0,
+          CONTROLLER_BUTTON_LSTICK, -1 },
+        { &g_config.input.lightgun_mapping.rstick, NULL, 0,
+          CONTROLLER_BUTTON_RSTICK, -1 },
+        { &g_config.input.lightgun_mapping.ltrig, NULL, 0, 0,
+          CONTROLLER_AXIS_LTRIG },
+        { &g_config.input.lightgun_mapping.rtrig, NULL, 0, 0,
+          CONTROLLER_AXIS_RTRIG },
+        { &g_config.input.lightgun_mapping.guide, NULL, 0,
+          CONTROLLER_BUTTON_GUIDE, -1 },
+    };
+
     uint32_t mb = state->rawinput_buttons;
-    if (mb & XEMU_RAWINPUT_BUTTON_LEFT) { // Trigger
-        state->buttons |= CONTROLLER_BUTTON_A;
-    }
-    if (mb & XEMU_RAWINPUT_BUTTON_RIGHT) { // Grip / reload
-        state->buttons |= CONTROLLER_BUTTON_B;
-    }
-    if (mb & XEMU_RAWINPUT_BUTTON_MIDDLE) {
-        state->buttons |= CONTROLLER_BUTTON_START;
-    }
-    if (mb & XEMU_RAWINPUT_BUTTON_X1) {
-        state->buttons |= CONTROLLER_BUTTON_BACK;
-    }
-    if (mb & XEMU_RAWINPUT_BUTTON_X2) {
-        state->buttons |= CONTROLLER_BUTTON_X;
+    for (size_t i = 0; i < ARRAY_SIZE(map_slots); i++) {
+        MapSlot *slot = &map_slots[i];
+        const char *spec = *slot->spec;
+
+        if (spec == NULL || spec[0] == '\0') {
+            if (slot->def_mouse_button && (mb & slot->def_mouse_button)) {
+                state->buttons |= slot->controller_button;
+            }
+            continue;
+        }
+
+        if (slot->parsed_from != spec) { // config string changed, re-parse
+            map_parse(&slot->src, spec);
+            slot->parsed_from = spec;
+        }
+        if (map_source_pressed(&slot->src, state)) {
+            if (slot->axis >= 0) {
+                state->axis[slot->axis] = 32767; // full trigger pull
+            } else {
+                state->buttons |= slot->controller_button;
+            }
+        }
     }
 
     // Aim position in window client pixels

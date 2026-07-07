@@ -307,49 +307,42 @@ void xemu_hud_update(void)
         }
     }
 
-    // Welcome popup for this fork. Shows at every startup until the user
-    // ticks "Don't show again" (tracked by EULA.txt in the settings dir).
+    // Startup splash for this fork: shows at every launch and closes
+    // itself automatically after a few seconds.
     static int flowa_popup_state = 0; // 0 = pending, 1 = open, 2 = done
-    static bool flowa_dont_show_again = false;
+    static double flowa_popup_opened_at = 0.0;
+    const double flowa_popup_duration = 8.0;
+    const char *flowa_popup_title =
+        "XEMU LightGun Edition v3.0 By Code Flow##flowa";
     if (flowa_popup_state == 0 && !first_boot_window.is_open) {
-        if (flowa_should_show_welcome()) {
-            ImGui::OpenPopup("Welcome to flowa's xemu!##flowa");
-            flowa_popup_state = 1;
-        } else {
-            flowa_popup_state = 2;
-        }
+        ImGui::OpenPopup(flowa_popup_title);
+        flowa_popup_opened_at = ImGui::GetTime();
+        flowa_popup_state = 1;
     }
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(),
                             ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    if (ImGui::BeginPopupModal("Welcome to flowa's xemu!##flowa", NULL,
+    if (ImGui::BeginPopupModal(flowa_popup_title, NULL,
                                ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Text(
-            "Welcome to this modified build of xemu!\n"
-            "\n"
-            "This is a fork focused on lightgun support (Sinden and any\n"
-            "HID mouse lightgun), born to fix Silent Scope Complete.\n"
-            "This release was created in collaboration with the Light Gun\n"
-            "Lunatics community - my personal thanks to all the fantastic\n"
-            "people there.\n"
-            "\n"
-            "The mouse cursor and the top menu bar are visible by default\n"
-            "so you can set everything up (controllers, BIOS, game disc).\n"
-            "When you are done, open 'flowa_config.ini' (generated next to\n"
-            "xemu.exe) and set hide_cursor = 1 and show_menu_bar = 0 for\n"
-            "the clean lightgun experience. From then on, just edit that\n"
-            "file whenever you want to change these settings.\n"
-            "Only change what you understand - wrong values can ruin the\n"
-            "experience. Delete the file to restore the defaults.\n"
-            "\n"
-            "If you enjoy this project, please support my channel and\n"
-            "subscribe so you don't miss future releases and updates:");
+        ImGui::SetWindowFontScale(1.8f);
+        ImGui::Text("XEMU LightGun Edition v3.0");
+        ImGui::Text("By Code Flow");
+        ImGui::Dummy(ImVec2(0, 6 * g_viewport_mgr.m_scale));
+        ImGui::Text("Lightgun support for Sinden and\n"
+                    "any HID mouse lightgun.");
+        ImGui::Dummy(ImVec2(0, 6 * g_viewport_mgr.m_scale));
+        ImGui::Text("Support the project - subscribe:");
         Hyperlink("https://www.youtube.com/@flowachannel4731",
                   "https://www.youtube.com/@flowachannel4731");
         ImGui::Dummy(ImVec2(0, 8 * g_viewport_mgr.m_scale));
-        ImGui::Checkbox("Don't show this again", &flowa_dont_show_again);
-        ImGui::Dummy(ImVec2(0, 8 * g_viewport_mgr.m_scale));
-        if (ImGui::Button("OK", ImVec2(120 * g_viewport_mgr.m_scale, 0))) {
-            flowa_welcome_dismiss(flowa_dont_show_again);
+        double elapsed = ImGui::GetTime() - flowa_popup_opened_at;
+        int remaining = (int)(flowa_popup_duration - elapsed) + 1;
+        if (remaining < 0) {
+            remaining = 0;
+        }
+        ImGui::Text("Closing automatically in %d second%s...",
+                    remaining, remaining == 1 ? "" : "s");
+        ImGui::SetWindowFontScale(1.0f);
+        if (elapsed >= flowa_popup_duration) {
             flowa_popup_state = 2;
             ImGui::CloseCurrentPopup();
         }

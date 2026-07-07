@@ -12,7 +12,7 @@ package_windows() {
     # Preserve user data (machine files, config, configurator) across rebuilds
     rm -rf dist-keep
     mkdir -p dist-keep
-    for keep in bios mcpxbootrom harddisk eeprom flowa_config.ini FlowaGunSetup.exe 8bit_sinden___red_Ezt_icon.ico; do
+    for keep in bios mcpxbootrom harddisk eeprom flowa_config.ini FlowaGunSetup.exe 8bit_sinden___red_Ezt_icon.ico xemu.toml; do
         if test -e "dist/$keep"; then
             mv "dist/$keep" dist-keep/
         fi
@@ -24,6 +24,7 @@ package_windows() {
     fi
     rm -rf dist-keep
     cp build/qemu-system-i386w.exe dist/xemu.exe
+    cp "${project_source_dir}/CHANGELOG.md" dist/CHANGELOG.md
     python3 "${project_source_dir}/get_deps.py" dist/xemu.exe dist
 }
 

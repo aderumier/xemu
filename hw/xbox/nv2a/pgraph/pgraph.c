@@ -177,6 +177,23 @@ void pgraph_write(void *opaque, hwaddr addr, uint64_t val, unsigned int size)
     qemu_mutex_unlock(&d->pfifo.lock);
 }
 
+static void pgraph_update_irq_bh(void *opaque)
+{
+    NV2AState *d = opaque;
+    nv2a_update_irq(d);
+}
+
+/* Raising a PGRAPH interrupt needs the BQL, but taking the BQL from the
+ * pfifo thread can deadlock: a BQL holder may itself be blocked waiting on
+ * this very thread (e.g. IDE DMA loading game data into GPU-watched RAM
+ * holds the BQL and waits for the memory-access-callback flush that only
+ * the pfifo thread performs). Defer the IRQ raise to a main-loop bottom
+ * half, which runs with the BQL already held. */
+static void pgraph_schedule_irq_update(NV2AState *d)
+{
+    aio_bh_schedule_oneshot(qemu_get_aio_context(), pgraph_update_irq_bh, d);
+}
+
 void pgraph_context_switch(NV2AState *d, unsigned int channel_id)
 {
     PGRAPHState *pg = &d->pgraph;
@@ -198,12 +215,8 @@ void pgraph_context_switch(NV2AState *d, unsigned int channel_id)
                             NV_PGRAPH_DEBUG_3_HW_CONTEXT_SWITCH));
 
         pg->waiting_for_context_switch = true;
-        qemu_mutex_unlock(&pg->lock);
-        bql_lock();
         pg->pending_interrupts |= NV_PGRAPH_INTR_CONTEXT_SWITCH;
-        nv2a_update_irq(d);
-        bql_unlock();
-        qemu_mutex_lock(&pg->lock);
+        pgraph_schedule_irq_update(d);
     }
 }
 
@@ -242,6 +255,8 @@ void pgraph_init(NV2AState *d)
                                               * sizeof(float) * 4);
         attribute->inline_buffer_populated = false;
     }
+
+    pg->ctx_switch_subchannel = -1;
 
     pgraph_clear_dirty_reg_map(pg);
 }
@@ -655,16 +670,23 @@ int pgraph_method(NV2AState *d, unsigned int subchannel,
     }
 
     // is this right?
-    pgraph_reg_w(pg, NV_PGRAPH_CTX_SWITCH1,
-                 pgraph_reg_r(pg, NV_PGRAPH_CTX_CACHE1 + subchannel * 4));
-    pgraph_reg_w(pg, NV_PGRAPH_CTX_SWITCH2,
-                 pgraph_reg_r(pg, NV_PGRAPH_CTX_CACHE2 + subchannel * 4));
-    pgraph_reg_w(pg, NV_PGRAPH_CTX_SWITCH3,
-                 pgraph_reg_r(pg, NV_PGRAPH_CTX_CACHE3 + subchannel * 4));
-    pgraph_reg_w(pg, NV_PGRAPH_CTX_SWITCH4,
-                 pgraph_reg_r(pg, NV_PGRAPH_CTX_CACHE4 + subchannel * 4));
-    pgraph_reg_w(pg, NV_PGRAPH_CTX_SWITCH5,
-                 pgraph_reg_r(pg, NV_PGRAPH_CTX_CACHE5 + subchannel * 4));
+    /* The switch registers only change when the subchannel changes or an
+     * object was just bound; skip the refresh otherwise, this runs for
+     * every single method word. */
+    if (pg->ctx_switch_subchannel != (int)subchannel ||
+        method == NV_SET_OBJECT) {
+        pgraph_reg_w(pg, NV_PGRAPH_CTX_SWITCH1,
+                     pgraph_reg_r(pg, NV_PGRAPH_CTX_CACHE1 + subchannel * 4));
+        pgraph_reg_w(pg, NV_PGRAPH_CTX_SWITCH2,
+                     pgraph_reg_r(pg, NV_PGRAPH_CTX_CACHE2 + subchannel * 4));
+        pgraph_reg_w(pg, NV_PGRAPH_CTX_SWITCH3,
+                     pgraph_reg_r(pg, NV_PGRAPH_CTX_CACHE3 + subchannel * 4));
+        pgraph_reg_w(pg, NV_PGRAPH_CTX_SWITCH4,
+                     pgraph_reg_r(pg, NV_PGRAPH_CTX_CACHE4 + subchannel * 4));
+        pgraph_reg_w(pg, NV_PGRAPH_CTX_SWITCH5,
+                     pgraph_reg_r(pg, NV_PGRAPH_CTX_CACHE5 + subchannel * 4));
+        pg->ctx_switch_subchannel = subchannel;
+    }
 
     uint32_t graphics_class = PG_GET_MASK(NV_PGRAPH_CTX_SWITCH1,
                                        NV_PGRAPH_CTX_SWITCH1_GRCLASS);
@@ -849,11 +871,7 @@ DEF_METHOD(NV097, NO_OPERATION)
     pg->pending_interrupts |= NV_PGRAPH_INTR_ERROR;
     pg->waiting_for_nop = true;
 
-    qemu_mutex_unlock(&pg->lock);
-    bql_lock();
-    nv2a_update_irq(d);
-    bql_unlock();
-    qemu_mutex_lock(&pg->lock);
+    pgraph_schedule_irq_update(d);
 }
 
 DEF_METHOD(NV097, WAIT_FOR_IDLE)
@@ -2520,11 +2538,18 @@ DEF_METHOD(NV097, SET_BEGIN_END)
     }
 }
 
+/* Games commonly re-send identical texture state before every draw. Only
+ * mark the slot dirty when a register value really changes, so the
+ * renderer backends can skip re-validating unchanged textures (a large
+ * per-draw CPU cost in draw-call-heavy titles). Texture *content* changes
+ * are tracked separately via memory access callbacks. */
 DEF_METHOD(NV097, SET_TEXTURE_OFFSET)
 {
     int slot = (method - NV097_SET_TEXTURE_OFFSET) / 64;
-    pgraph_reg_w(pg, NV_PGRAPH_TEXOFFSET0 + slot * 4, parameter);
-    pg->texture_dirty[slot] = true;
+    if (pgraph_reg_r(pg, NV_PGRAPH_TEXOFFSET0 + slot * 4) != parameter) {
+        pgraph_reg_w(pg, NV_PGRAPH_TEXOFFSET0 + slot * 4, parameter);
+        pg->texture_dirty[slot] = true;
+    }
 }
 
 DEF_METHOD(NV097, SET_TEXTURE_FORMAT)
@@ -2551,6 +2576,7 @@ DEF_METHOD(NV097, SET_TEXTURE_FORMAT)
         GET_MASK(parameter, NV097_SET_TEXTURE_FORMAT_BASE_SIZE_P);
 
     unsigned int reg = NV_PGRAPH_TEXFMT0 + slot * 4;
+    uint32_t prev = pgraph_reg_r(pg, reg);
     PG_SET_MASK(reg, NV_PGRAPH_TEXFMT0_CONTEXT_DMA, dma_select);
     PG_SET_MASK(reg, NV_PGRAPH_TEXFMT0_CUBEMAPENABLE, cubemap);
     PG_SET_MASK(reg, NV_PGRAPH_TEXFMT0_BORDER_SOURCE, border_source);
@@ -2561,35 +2587,45 @@ DEF_METHOD(NV097, SET_TEXTURE_FORMAT)
     PG_SET_MASK(reg, NV_PGRAPH_TEXFMT0_BASE_SIZE_V, log_height);
     PG_SET_MASK(reg, NV_PGRAPH_TEXFMT0_BASE_SIZE_P, log_depth);
 
-    pg->texture_dirty[slot] = true;
+    if (pgraph_reg_r(pg, reg) != prev) {
+        pg->texture_dirty[slot] = true;
+    }
 }
 
 DEF_METHOD(NV097, SET_TEXTURE_CONTROL0)
 {
     int slot = (method - NV097_SET_TEXTURE_CONTROL0) / 64;
-    pgraph_reg_w(pg, NV_PGRAPH_TEXCTL0_0 + slot*4, parameter);
-    pg->texture_dirty[slot] = true;
+    if (pgraph_reg_r(pg, NV_PGRAPH_TEXCTL0_0 + slot*4) != parameter) {
+        pgraph_reg_w(pg, NV_PGRAPH_TEXCTL0_0 + slot*4, parameter);
+        pg->texture_dirty[slot] = true;
+    }
 }
 
 DEF_METHOD(NV097, SET_TEXTURE_CONTROL1)
 {
     int slot = (method - NV097_SET_TEXTURE_CONTROL1) / 64;
-    pgraph_reg_w(pg, NV_PGRAPH_TEXCTL1_0 + slot*4, parameter);
-    pg->texture_dirty[slot] = true;
+    if (pgraph_reg_r(pg, NV_PGRAPH_TEXCTL1_0 + slot*4) != parameter) {
+        pgraph_reg_w(pg, NV_PGRAPH_TEXCTL1_0 + slot*4, parameter);
+        pg->texture_dirty[slot] = true;
+    }
 }
 
 DEF_METHOD(NV097, SET_TEXTURE_FILTER)
 {
     int slot = (method - NV097_SET_TEXTURE_FILTER) / 64;
-    pgraph_reg_w(pg, NV_PGRAPH_TEXFILTER0 + slot * 4, parameter);
-    pg->texture_dirty[slot] = true;
+    if (pgraph_reg_r(pg, NV_PGRAPH_TEXFILTER0 + slot * 4) != parameter) {
+        pgraph_reg_w(pg, NV_PGRAPH_TEXFILTER0 + slot * 4, parameter);
+        pg->texture_dirty[slot] = true;
+    }
 }
 
 DEF_METHOD(NV097, SET_TEXTURE_IMAGE_RECT)
 {
     int slot = (method - NV097_SET_TEXTURE_IMAGE_RECT) / 64;
-    pgraph_reg_w(pg, NV_PGRAPH_TEXIMAGERECT0 + slot * 4, parameter);
-    pg->texture_dirty[slot] = true;
+    if (pgraph_reg_r(pg, NV_PGRAPH_TEXIMAGERECT0 + slot * 4) != parameter) {
+        pgraph_reg_w(pg, NV_PGRAPH_TEXIMAGERECT0 + slot * 4, parameter);
+        pg->texture_dirty[slot] = true;
+    }
 }
 
 DEF_METHOD(NV097, SET_TEXTURE_PALETTE)
@@ -2604,11 +2640,14 @@ DEF_METHOD(NV097, SET_TEXTURE_PALETTE)
         GET_MASK(parameter, NV097_SET_TEXTURE_PALETTE_OFFSET);
 
     unsigned int reg = NV_PGRAPH_TEXPALETTE0 + slot * 4;
+    uint32_t prev = pgraph_reg_r(pg, reg);
     PG_SET_MASK(reg, NV_PGRAPH_TEXPALETTE0_CONTEXT_DMA, dma_select);
     PG_SET_MASK(reg, NV_PGRAPH_TEXPALETTE0_LENGTH, length);
     PG_SET_MASK(reg, NV_PGRAPH_TEXPALETTE0_OFFSET, offset);
 
-    pg->texture_dirty[slot] = true;
+    if (pgraph_reg_r(pg, reg) != prev) {
+        pg->texture_dirty[slot] = true;
+    }
 }
 
 DEF_METHOD(NV097, SET_TEXTURE_BORDER_COLOR)
@@ -2753,11 +2792,26 @@ DEF_METHOD(NV097, DRAW_ARRAYS)
     pg->draw_arrays_prevent_connect = false;
 }
 
-DEF_METHOD_NON_INC(NV097, INLINE_ARRAY)
+/* Defined without the NON_INC wrapper on purpose: bulk vertex data would
+ * otherwise pay a dispatch-loop iteration per word. Consume the whole run
+ * at once (little-endian host assumed, as everywhere in this fork). */
+DEF_METHOD(NV097, INLINE_ARRAY)
 {
     pgraph_check_within_begin_end_block(pg);
     assert(pg->inline_array_length < NV2A_MAX_BATCH_LENGTH);
-    pg->inline_array[pg->inline_array_length++] = parameter;
+
+    if (inc) {
+        pg->inline_array[pg->inline_array_length++] = parameter;
+        return;
+    }
+
+    size_t count = MIN(num_words_available,
+                       (size_t)NV2A_MAX_BATCH_LENGTH -
+                           (size_t)pg->inline_array_length);
+    memcpy(&pg->inline_array[pg->inline_array_length], parameters,
+           count * sizeof(uint32_t));
+    pg->inline_array_length += count;
+    *num_words_consumed = count;
 }
 
 DEF_METHOD_INC(NV097, SET_EYE_VECTOR)

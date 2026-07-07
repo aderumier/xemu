@@ -70,6 +70,27 @@ input:
   lightgun_sensitivity:
     type: number
     default: 1.0
+  # Optional custom bindings for lightgun ports. Empty = default mouse
+  # mapping (LEFT=trigger/A, RIGHT=B, MIDDLE=Start, X1=Back, X2=X).
+  # Formats: "mouse:<hash>:<left|right|middle|x1|x2>" or "key:<SDL key name>"
+  lightgun_mapping:
+    trigger: string
+    b: string
+    x: string
+    start: string
+    back: string
+    dpad_up: string
+    dpad_down: string
+    dpad_left: string
+    dpad_right: string
+    y: string
+    white: string
+    black: string
+    lstick: string
+    rstick: string
+    ltrig: string
+    rtrig: string
+    guide: string
   # Deprecated: use 'enable_rumble' on the controller mapping settings instead
   allow_vibration:
     type: bool

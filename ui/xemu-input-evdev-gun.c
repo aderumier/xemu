@@ -670,8 +670,13 @@ static void gun_drain_node(EvdevGun *gun, int fd)
                 gun_use_rel_axes(gun);
             }
             if (gun->rel_axes) {
+                float sens = g_config.input.lightgun.rel_sensitivity;
+                if (sens <= 0.0f) {
+                    sens = 1.0f;
+                }
                 EvdevGunAxis *axis = (evt.code == REL_X) ? &gun->x : &gun->y;
-                int v = axis->value + evt.value * REL_DELTA_SCALE;
+                int v = axis->value +
+                        (int)(evt.value * REL_DELTA_SCALE * sens);
                 axis->value = MIN(MAX(v, axis->min), axis->max);
             }
             break;

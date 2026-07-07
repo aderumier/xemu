@@ -51,6 +51,16 @@ input:
       peripheral_param_0: string
       peripheral_type_1: integer
       peripheral_param_1: string
+  lightgun:
+    # Explicit evdev device assignment for light guns (Linux only).
+    # Accepts /dev/input/eventN, /sys/class/input/eventN, a bare
+    # "eventN", or a /dev/input/by-id/... symlink. When any gun device
+    # is set, the udev auto-detection (ID_INPUT_GUN / absolute-axis
+    # mice) is skipped entirely.
+    gun1_device: string
+    gun2_device: string
+    gun3_device: string
+    gun4_device: string
   gamecontrollerdb_path: string
   auto_bind:
     type: bool

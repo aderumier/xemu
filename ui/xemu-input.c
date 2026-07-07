@@ -565,6 +565,14 @@ void xemu_input_update_sdl_kbd_controller_state(ControllerState *state)
             state->lg.buttons |= CONTROLLER_BUTTON_START;
         if (gunBtn & EVDEV_GUN_BTN_1)
             state->lg.buttons |= CONTROLLER_BUTTON_BACK;
+        if (gunBtn & EVDEV_GUN_BTN_2)
+            state->lg.buttons |= CONTROLLER_BUTTON_X;
+        if (gunBtn & EVDEV_GUN_BTN_3)
+            state->lg.buttons |= CONTROLLER_BUTTON_Y;
+        if (gunBtn & EVDEV_GUN_BTN_4)
+            state->lg.buttons |= CONTROLLER_BUTTON_WHITE;
+        if (gunBtn & EVDEV_GUN_BTN_5)
+            state->lg.buttons |= CONTROLLER_BUTTON_BLACK;
 
         if (kbd[g_config.input.keyboard_controller_scancode_map.a])
             state->lg.buttons |= CONTROLLER_BUTTON_A;
@@ -704,6 +712,7 @@ void xemu_input_update_sdl_kbd_controller_state(ControllerState *state)
 void xemu_input_update_sdl_controller_state(ControllerState *state)
 {
     state->gp.buttons = 0;
+    state->lg.buttons = 0;
     memset(state->gp.axis, 0, sizeof(state->gp.axis));
 
     if (state->bound < 0)

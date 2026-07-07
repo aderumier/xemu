@@ -22,6 +22,7 @@
 #if defined(__linux__) && defined(CONFIG_LIBUDEV)
 
 #include "xemu-input-evdev-gun.h"
+#include "xemu-settings.h"
 
 #include <libudev.h>
 #include <linux/input.h>
@@ -69,18 +70,34 @@ static bool scanned;
 static uint32_t button_mask_for_code(uint16_t code)
 {
     switch (code) {
-    case BTN_LEFT:   return EVDEV_GUN_BTN_TRIGGER;
-    case BTN_RIGHT:  return EVDEV_GUN_BTN_RELOAD;
-    case BTN_MIDDLE: return EVDEV_GUN_BTN_AUX;
-    case BTN_1:      return EVDEV_GUN_BTN_1;
-    case BTN_2:      return EVDEV_GUN_BTN_2;
-    case BTN_3:      return EVDEV_GUN_BTN_3;
-    case BTN_4:      return EVDEV_GUN_BTN_4;
-    case BTN_5:      return EVDEV_GUN_BTN_5;
-    case BTN_6:      return EVDEV_GUN_BTN_6;
-    case BTN_7:      return EVDEV_GUN_BTN_7;
-    case BTN_8:      return EVDEV_GUN_BTN_8;
-    default:         return 0;
+    /* Mouse-class devices (Sinden, Gun4IR, DolphinBar, plain mice) */
+    case BTN_LEFT:    return EVDEV_GUN_BTN_TRIGGER;
+    case BTN_RIGHT:   return EVDEV_GUN_BTN_RELOAD;
+    case BTN_MIDDLE:  return EVDEV_GUN_BTN_AUX;
+    case BTN_SIDE:    return EVDEV_GUN_BTN_1;
+    case BTN_EXTRA:   return EVDEV_GUN_BTN_2;
+    case BTN_FORWARD: return EVDEV_GUN_BTN_3;
+    case BTN_BACK:    return EVDEV_GUN_BTN_4;
+    case BTN_TASK:    return EVDEV_GUN_BTN_5;
+    /* Joystick-class devices (AimTrak and other HID guns) */
+    case BTN_TRIGGER: return EVDEV_GUN_BTN_TRIGGER;
+    case BTN_THUMB:   return EVDEV_GUN_BTN_RELOAD;
+    case BTN_THUMB2:  return EVDEV_GUN_BTN_AUX;
+    case BTN_TOP:     return EVDEV_GUN_BTN_1;
+    case BTN_TOP2:    return EVDEV_GUN_BTN_2;
+    case BTN_PINKIE:  return EVDEV_GUN_BTN_3;
+    case BTN_BASE:    return EVDEV_GUN_BTN_4;
+    case BTN_BASE2:   return EVDEV_GUN_BTN_5;
+    /* Misc BTN_0..BTN_9 range */
+    case BTN_1:       return EVDEV_GUN_BTN_1;
+    case BTN_2:       return EVDEV_GUN_BTN_2;
+    case BTN_3:       return EVDEV_GUN_BTN_3;
+    case BTN_4:       return EVDEV_GUN_BTN_4;
+    case BTN_5:       return EVDEV_GUN_BTN_5;
+    case BTN_6:       return EVDEV_GUN_BTN_6;
+    case BTN_7:       return EVDEV_GUN_BTN_7;
+    case BTN_8:       return EVDEV_GUN_BTN_8;
+    default:          return 0;
     }
 }
 
@@ -221,9 +238,67 @@ static void scan_udev_property(struct udev *udev, const char *property,
     udev_enumerate_unref(enumerate);
 }
 
+/*
+ * Accept several spellings for a configured gun device: a devnode
+ * (/dev/input/eventN or a /dev/input/by-id/... symlink), a sysfs path
+ * (/sys/class/input/eventN), or a bare "eventN".
+ */
+static const char *resolve_devnode(const char *path, char *buf, size_t len)
+{
+    if (strncmp(path, "/sys/", 5) == 0) {
+        const char *base = strrchr(path, '/');
+        snprintf(buf, len, "/dev/input%s", base);
+        return buf;
+    }
+    if (path[0] != '/') {
+        snprintf(buf, len, "/dev/input/%s", path);
+        return buf;
+    }
+    return path;
+}
+
+/*
+ * Open guns explicitly listed in the config
+ * (input.lightgun.gunN_device). Returns true if at least one device
+ * was configured (even if it failed to open), in which case udev
+ * auto-detection is skipped: an explicit config fully describes the
+ * setup. Gun index follows config order, skipping devices that fail
+ * to open.
+ */
+static bool scan_config_devices(void)
+{
+    const char *paths[MAX_GUNS] = {
+        g_config.input.lightgun.gun1_device,
+        g_config.input.lightgun.gun2_device,
+        g_config.input.lightgun.gun3_device,
+        g_config.input.lightgun.gun4_device,
+    };
+    bool any_configured = false;
+
+    for (int i = 0; i < MAX_GUNS; i++) {
+        if (!paths[i] || !paths[i][0]) {
+            continue;
+        }
+        any_configured = true;
+
+        char buf[64];
+        const char *devnode = resolve_devnode(paths[i], buf, sizeof(buf));
+        if (!gun_open(devnode, true)) {
+            fprintf(stderr,
+                    "evdev-gun: configured gun%d_device '%s' not usable\n",
+                    i + 1, paths[i]);
+        }
+    }
+    return any_configured;
+}
+
 static void scan_devices(void)
 {
     scanned = true;
+
+    if (scan_config_devices()) {
+        return;
+    }
 
     struct udev *udev = udev_new();
     if (!udev) {

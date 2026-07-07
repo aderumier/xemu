@@ -1,8 +1,12 @@
 /*
  * xemu Linux evdev light gun support
  *
- * Reads light gun devices directly from /dev/input, enumerated via
- * libudev. Devices tagged with the ID_INPUT_GUN udev property (e.g. by
+ * Reads light gun devices directly from /dev/input. Devices explicitly
+ * assigned in the config (input.lightgun.gunN_device, accepting
+ * /dev/input/eventN, /sys/class/input/eventN, bare "eventN" or
+ * /dev/input/by-id/... forms) take absolute priority and disable
+ * auto-detection. Otherwise devices are enumerated via libudev:
+ * those tagged with the ID_INPUT_GUN udev property (e.g. by
  * Batocera/Sinden/Gun4IR udev rules) are matched in priority; tagged
  * relative mice are accepted too, each driving an independent virtual
  * pointer. If nothing is tagged, absolute-axis mice are considered (a
@@ -30,9 +34,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define EVDEV_GUN_BTN_TRIGGER (1 << 0)  /* BTN_LEFT */
-#define EVDEV_GUN_BTN_RELOAD  (1 << 1)  /* BTN_RIGHT */
-#define EVDEV_GUN_BTN_AUX     (1 << 2)  /* BTN_MIDDLE */
+#define EVDEV_GUN_BTN_TRIGGER (1 << 0)  /* BTN_LEFT / BTN_TRIGGER */
+#define EVDEV_GUN_BTN_RELOAD  (1 << 1)  /* BTN_RIGHT / BTN_THUMB */
+#define EVDEV_GUN_BTN_AUX     (1 << 2)  /* BTN_MIDDLE / BTN_THUMB2 */
 #define EVDEV_GUN_BTN_1       (1 << 3)
 #define EVDEV_GUN_BTN_2       (1 << 4)
 #define EVDEV_GUN_BTN_3       (1 << 5)

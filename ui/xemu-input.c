@@ -723,18 +723,20 @@ static void xemu_input_update_jvs_lightgun(void)
         }
 
         /*
-         * JVS analog channels.
-         *   - A real light gun owns channels p*2 / p*2+1 as X/Y.
-         *   - Otherwise, a gamepad with the right stick idle drives
-         *     driving-style analog (steering p*2, accel p*2+1, brake ch2
-         *     for player 0). This wins over the mouse so a wheel game's
-         *     pedals aren't hijacked by the cursor position.
-         *   - Otherwise the mouse / right-stick aim owns X/Y.
+         * JVS analog channels, by which source is active this frame:
+         *   1. a light gun actually aiming at the screen -> X/Y
+         *   2. else a gamepad (right stick idle) -> driving analog
+         *      (steering p*2, accel p*2+1, brake ch2 for player 0); this
+         *      beats the mouse so a wheel game's pedals aren't hijacked
+         *      by the cursor, and a merely-present idle gun doesn't block
+         *      it either.
+         *   3. else the mouse / right-stick aim -> X/Y
          */
-        bool driving = a->pad_present && !a->has_gun && !a->pad_stick_aim;
-        if (a->has_gun) {
-            jvs->analog[p * 2 + 0] = a->aim_valid ? (uint16_t)(a->ax * 0xFFFF) : 0;
-            jvs->analog[p * 2 + 1] = a->aim_valid ? (uint16_t)(a->ay * 0xFFFF) : 0;
+        bool gun_aiming = a->has_gun && a->aim_valid;
+        bool driving = a->pad_present && !a->pad_stick_aim && !gun_aiming;
+        if (gun_aiming) {
+            jvs->analog[p * 2 + 0] = (uint16_t)(a->ax * 0xFFFF);
+            jvs->analog[p * 2 + 1] = (uint16_t)(a->ay * 0xFFFF);
         } else if (driving) {
             jvs->analog[p * 2 + 0] = a->steer;
             jvs->analog[p * 2 + 1] = a->accel;

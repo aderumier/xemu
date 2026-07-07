@@ -573,6 +573,14 @@ void xemu_input_update_sdl_kbd_controller_state(ControllerState *state)
             state->lg.buttons |= CONTROLLER_BUTTON_WHITE;
         if (gunBtn & EVDEV_GUN_BTN_BLACK)
             state->lg.buttons |= CONTROLLER_BUTTON_BLACK;
+        if (gunBtn & EVDEV_GUN_BTN_DPAD_UP)
+            state->lg.buttons |= CONTROLLER_BUTTON_DPAD_UP;
+        if (gunBtn & EVDEV_GUN_BTN_DPAD_DOWN)
+            state->lg.buttons |= CONTROLLER_BUTTON_DPAD_DOWN;
+        if (gunBtn & EVDEV_GUN_BTN_DPAD_LEFT)
+            state->lg.buttons |= CONTROLLER_BUTTON_DPAD_LEFT;
+        if (gunBtn & EVDEV_GUN_BTN_DPAD_RIGHT)
+            state->lg.buttons |= CONTROLLER_BUTTON_DPAD_RIGHT;
 
         if (kbd[g_config.input.keyboard_controller_scancode_map.a])
             state->lg.buttons |= CONTROLLER_BUTTON_A;

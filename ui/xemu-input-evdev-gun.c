@@ -200,6 +200,14 @@ static void parse_button_bindings(void)
         { g_config.input.lightgun.gun_buttons.back,  EVDEV_GUN_BTN_BACK,  "back" },
         { g_config.input.lightgun.gun_buttons.white, EVDEV_GUN_BTN_WHITE, "white" },
         { g_config.input.lightgun.gun_buttons.black, EVDEV_GUN_BTN_BLACK, "black" },
+        { g_config.input.lightgun.gun_buttons.dpad_up,
+          EVDEV_GUN_BTN_DPAD_UP, "dpad_up" },
+        { g_config.input.lightgun.gun_buttons.dpad_down,
+          EVDEV_GUN_BTN_DPAD_DOWN, "dpad_down" },
+        { g_config.input.lightgun.gun_buttons.dpad_left,
+          EVDEV_GUN_BTN_DPAD_LEFT, "dpad_left" },
+        { g_config.input.lightgun.gun_buttons.dpad_right,
+          EVDEV_GUN_BTN_DPAD_RIGHT, "dpad_right" },
     };
 
     code_map_len = 0;

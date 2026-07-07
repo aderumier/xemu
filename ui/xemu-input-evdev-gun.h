@@ -38,14 +38,18 @@
  * Xbox-semantic button masks. Which evdev codes drive which mask is
  * configured via input.lightgun.gun_buttons.* (see config_spec.yml).
  */
-#define EVDEV_GUN_BTN_A     (1 << 0)  /* trigger */
-#define EVDEV_GUN_BTN_B     (1 << 1)  /* reload */
-#define EVDEV_GUN_BTN_X     (1 << 2)
-#define EVDEV_GUN_BTN_Y     (1 << 3)
-#define EVDEV_GUN_BTN_START (1 << 4)
-#define EVDEV_GUN_BTN_BACK  (1 << 5)
-#define EVDEV_GUN_BTN_WHITE (1 << 6)
-#define EVDEV_GUN_BTN_BLACK (1 << 7)
+#define EVDEV_GUN_BTN_A          (1 << 0)  /* trigger */
+#define EVDEV_GUN_BTN_B          (1 << 1)  /* reload */
+#define EVDEV_GUN_BTN_X          (1 << 2)
+#define EVDEV_GUN_BTN_Y          (1 << 3)
+#define EVDEV_GUN_BTN_START      (1 << 4)
+#define EVDEV_GUN_BTN_BACK       (1 << 5)
+#define EVDEV_GUN_BTN_WHITE      (1 << 6)
+#define EVDEV_GUN_BTN_BLACK      (1 << 7)
+#define EVDEV_GUN_BTN_DPAD_UP    (1 << 8)
+#define EVDEV_GUN_BTN_DPAD_DOWN  (1 << 9)
+#define EVDEV_GUN_BTN_DPAD_LEFT  (1 << 10)
+#define EVDEV_GUN_BTN_DPAD_RIGHT (1 << 11)
 
 #if defined(__linux__) && defined(CONFIG_LIBUDEV)
 

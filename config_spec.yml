@@ -67,6 +67,10 @@ input:
     # a comma-separated list of evdev names (BTN_LEFT, BTN_TRIGGER,
     # BTN_1, KEY_..., or a raw code like 0x121/289). Unmapped presses
     # are logged on stderr with the name to bind. Empty = unbound.
+    # Defaults follow the Batocera gun convention (trigger=BTN_LEFT,
+    # action=BTN_RIGHT, start=BTN_MIDDLE, select=BTN_1, SUB1..3=
+    # BTN_2..4, up/down/left/right=BTN_5..8), with joystick-code
+    # aliases for guns exposing a joystick interface.
     gun_buttons:
       a:
         type: string
@@ -76,22 +80,34 @@ input:
         default: 'BTN_RIGHT,BTN_THUMB'
       x:
         type: string
-        default: 'BTN_EXTRA,BTN_TOP2,BTN_2'
+        default: 'BTN_2,BTN_EXTRA,BTN_TOP2'
       y:
         type: string
-        default: 'BTN_FORWARD,BTN_PINKIE,BTN_3'
+        default: 'BTN_3,BTN_FORWARD,BTN_PINKIE'
       start:
         type: string
         default: 'BTN_MIDDLE,BTN_THUMB2'
       back:
         type: string
-        default: 'BTN_SIDE,BTN_TOP,BTN_1'
+        default: 'BTN_1,BTN_SIDE,BTN_TOP'
       white:
         type: string
-        default: 'BTN_BACK,BTN_BASE,BTN_4'
+        default: 'BTN_4,BTN_BACK,BTN_BASE'
       black:
         type: string
-        default: 'BTN_TASK,BTN_BASE2,BTN_5'
+        default: 'BTN_TASK,BTN_BASE2'
+      dpad_up:
+        type: string
+        default: 'BTN_5'
+      dpad_down:
+        type: string
+        default: 'BTN_6'
+      dpad_left:
+        type: string
+        default: 'BTN_7'
+      dpad_right:
+        type: string
+        default: 'BTN_8'
   gamecontrollerdb_path: string
   auto_bind:
     type: bool

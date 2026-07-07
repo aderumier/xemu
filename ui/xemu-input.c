@@ -564,6 +564,52 @@ static void xemu_input_update_jvs_player(ChihiroJVSState *jvs, int player,
     jvs->player_switches[player][1] = sw1;
 }
 
+/*
+ * Aggregated JVS input for one player, OR-combined from every source
+ * (light gun, SDL gamepad, mouse, keyboard) so they all work at once.
+ */
+typedef struct JvsPlayerAgg {
+    bool trigger, reload, start, service, coin, push2, push3;
+    bool aim_valid;   /* a source is providing absolute aim this frame */
+    bool has_gun;     /* a light gun is assigned to this player */
+    float ax, ay;     /* aim, normalized 0..1 (top-left origin) */
+} JvsPlayerAgg;
+
+/* Add one SDL gamepad's buttons (and, if no other aim source, right-stick
+ * aim as a virtual crosshair) to a player's aggregate. */
+static void jvs_add_gamepad(JvsPlayerAgg *a, SDL_Gamepad *gp)
+{
+    if (SDL_GetGamepadButton(gp, SDL_GAMEPAD_BUTTON_SOUTH) ||
+        SDL_GetGamepadAxis(gp, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 16000)
+        a->trigger = true;
+    if (SDL_GetGamepadButton(gp, SDL_GAMEPAD_BUTTON_EAST) ||
+        SDL_GetGamepadAxis(gp, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 16000)
+        a->reload = true;
+    if (SDL_GetGamepadButton(gp, SDL_GAMEPAD_BUTTON_START))
+        a->start = true;
+    if (SDL_GetGamepadButton(gp, SDL_GAMEPAD_BUTTON_BACK))
+        a->coin = true;
+    if (SDL_GetGamepadButton(gp, SDL_GAMEPAD_BUTTON_WEST) ||
+        SDL_GetGamepadButton(gp, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER))
+        a->push2 = true;   /* ES / weapon change */
+    if (SDL_GetGamepadButton(gp, SDL_GAMEPAD_BUTTON_NORTH) ||
+        SDL_GetGamepadButton(gp, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER))
+        a->push3 = true;
+    /* GUIDE is intentionally left for the xemu menu, not JVS service. */
+
+    /* Gamepad-only aim: right stick deflection maps to screen position.
+     * Suppressed when a gun or the mouse already owns this player's aim. */
+    if (!a->aim_valid && !a->has_gun) {
+        float sx = SDL_GetGamepadAxis(gp, SDL_GAMEPAD_AXIS_RIGHTX) / 32767.0f;
+        float sy = SDL_GetGamepadAxis(gp, SDL_GAMEPAD_AXIS_RIGHTY) / 32767.0f;
+        if (sx * sx + sy * sy > 0.04f) {   /* outside a 20% dead zone */
+            a->ax = MIN(MAX(0.5f + 0.5f * sx, 0.0f), 1.0f);
+            a->ay = MIN(MAX(0.5f + 0.5f * sy, 0.0f), 1.0f);
+            a->aim_valid = true;
+        }
+    }
+}
+
 static void xemu_input_update_jvs_lightgun(void)
 {
     if (!chihiro_jvs_global) return;
@@ -574,43 +620,39 @@ static void xemu_input_update_jvs_lightgun(void)
     bool p1_start = kbd[g_config.input.keyboard_controller_scancode_map.start];
     bool p1_service = kbd[SDL_SCANCODE_9];
 
+    JvsPlayerAgg agg[JVS_MAX_PLAYERS] = { 0 };
+
+    /* Source 1: evdev light guns — gun p drives player p (aim + buttons) */
     if (xemu_input_evdev_gun_available()) {
-        // evdev light guns (ID_INPUT_GUN in priority): gun 0 drives
-        // player 1, gun 1 (if present) drives player 2
         int num = MIN(xemu_input_evdev_gun_count(), JVS_MAX_PLAYERS);
         for (int p = 0; p < num; p++) {
+            JvsPlayerAgg *a = &agg[p];
+            a->has_gun = true;
             float gx = 0, gy = 0;
-            bool offscreen = !xemu_input_evdev_gun_get_pos(p, &gx, &gy);
-            uint32_t gunBtn = xemu_input_evdev_gun_get_buttons(p);
-            bool trigger = (gunBtn & EVDEV_GUN_BTN_TRIGGER) != 0;
-            bool reload = (gunBtn & EVDEV_GUN_BTN_RELOAD) != 0 ||
-                          (p == 0 && kbd[SDL_SCANCODE_R]);
-            // Shooting offscreen reloads, like on the real cabinet
-            if (offscreen && trigger) {
-                reload = true;
-                trigger = false;
+            if (xemu_input_evdev_gun_get_pos(p, &gx, &gy)) {
+                a->ax = gx;
+                a->ay = gy;
+                a->aim_valid = true;
             }
-            bool start = (gunBtn & EVDEV_GUN_BTN_AUX) != 0 ||
-                         (p == 0 && p1_start);
-            bool coin = (gunBtn & EVDEV_GUN_BTN_1) != 0 ||
-                        (p == 0 && kbd[SDL_SCANCODE_5]);
-            // Middle button doubles as push 4 (ES pedal): Start is only
-            // read in menus, ES only in-game, so they never conflict
-            bool push2 = (gunBtn & EVDEV_GUN_BTN_2) != 0 ||
-                         (gunBtn & EVDEV_GUN_BTN_AUX) != 0 ||
-                         (p == 0 && kbd[SDL_SCANCODE_E]);
-            bool push3 = (gunBtn & EVDEV_GUN_BTN_3) != 0;
-            xemu_input_update_jvs_player(jvs, p, offscreen, trigger, reload,
-                                         start, p == 0 && p1_service, coin,
-                                         push2, push3, gx, gy);
+            uint32_t gunBtn = xemu_input_evdev_gun_get_buttons(p);
+            if (gunBtn & EVDEV_GUN_BTN_TRIGGER) a->trigger = true;
+            if (gunBtn & EVDEV_GUN_BTN_RELOAD)  a->reload = true;
+            if (gunBtn & EVDEV_GUN_BTN_AUX)   { a->start = true; a->push2 = true; }
+            if (gunBtn & EVDEV_GUN_BTN_1)       a->coin = true;
+            if (gunBtn & EVDEV_GUN_BTN_2)       a->push2 = true;
+            if (gunBtn & EVDEV_GUN_BTN_3)       a->push3 = true;
         }
-    } else {
+    }
+
+    /* Source 2: mouse — player 0 only, and only if no gun owns player 0.
+     * A gun and the OS cursor can't both provide absolute aim sanely. */
+    if (!agg[0].has_gun) {
+        JvsPlayerAgg *a = &agg[0];
         float mx, my;
         uint32_t mouseBtn = SDL_GetMouseState(&mx, &my);
 
         int32_t winW, winH;
         SDL_GetWindowSize(m_window, &winW, &winH);
-
         if (viewport_coords[2] > 0 && viewport_coords[3] > 0) {
             int32_t drawW, drawH;
             SDL_GetWindowSizeInPixels(m_window, &drawW, &drawH);
@@ -621,30 +663,53 @@ static void xemu_input_update_jvs_lightgun(void)
             winW = (int)(viewport_coords[2] * scaleW);
             winH = (int)(viewport_coords[3] * scaleH);
         }
+        if (mx >= 0 && mx <= winW && my >= 0 && my <= winH && winW > 0 && winH > 0) {
+            a->ax = mx / winW;
+            a->ay = my / winH;
+            a->aim_valid = true;
+        }
+        if (mouseBtn & SDL_BUTTON_MASK(SDL_BUTTON_LEFT))   a->trigger = true;
+        if (mouseBtn & SDL_BUTTON_MASK(SDL_BUTTON_RIGHT))  a->reload = true;
+        if (mouseBtn & SDL_BUTTON_MASK(SDL_BUTTON_MIDDLE)) { a->start = true; a->push2 = true; }
+        if (mouseBtn & SDL_BUTTON_MASK(SDL_BUTTON_X1))     a->coin = true;
+        if (mouseBtn & SDL_BUTTON_MASK(SDL_BUTTON_X2))     a->push2 = true;
+    }
 
-        bool offscreen = !(mx >= 0 && mx <= winW && my >= 0 && my <= winH);
-        bool trigger = (mouseBtn & SDL_BUTTON_MASK(SDL_BUTTON_LEFT)) != 0;
-        bool reload  = (mouseBtn & SDL_BUTTON_MASK(SDL_BUTTON_RIGHT)) != 0 ||
-                       kbd[SDL_SCANCODE_R];
-        // Shooting offscreen reloads, like on the real cabinet
+    /* Source 3: SDL gamepads, in parallel — gamepad i drives player i.
+     * Buttons are always OR'd in; stick aim only fills a player with no
+     * gun/mouse aim, so a pad works alongside a gun on the same player. */
+    int gp_idx = 0;
+    ControllerState *iter;
+    QTAILQ_FOREACH (iter, &available_controllers, entry) {
+        if (iter->type != INPUT_DEVICE_SDL_GAMEPAD || !iter->sdl_gamepad)
+            continue;
+        if (gp_idx >= JVS_MAX_PLAYERS)
+            break;
+        jvs_add_gamepad(&agg[gp_idx], iter->sdl_gamepad);
+        gp_idx++;
+    }
+
+    /* Source 4: keyboard — player 0 convenience keys */
+    if (kbd[SDL_SCANCODE_R]) agg[0].reload = true;
+    if (kbd[SDL_SCANCODE_E]) agg[0].push2 = true;
+    if (kbd[SDL_SCANCODE_5]) agg[0].coin = true;
+    if (p1_start)   agg[0].start = true;
+    if (p1_service) agg[0].service = true;
+
+    /* Emit each player's aggregated state */
+    for (int p = 0; p < JVS_MAX_PLAYERS; p++) {
+        JvsPlayerAgg *a = &agg[p];
+        bool offscreen = !a->aim_valid;
+        bool trigger = a->trigger;
+        bool reload = a->reload;
+        /* Shooting offscreen reloads, like on the real cabinet */
         if (offscreen && trigger) {
             reload = true;
             trigger = false;
         }
-        bool start = (mouseBtn & SDL_BUTTON_MASK(SDL_BUTTON_MIDDLE)) != 0 ||
-                     p1_start;
-        bool coin = (mouseBtn & SDL_BUTTON_MASK(SDL_BUTTON_X1)) != 0 ||
-                    kbd[SDL_SCANCODE_5];
-        // Middle button doubles as push 4 (ES pedal), like the evdev path
-        bool push2 = (mouseBtn & SDL_BUTTON_MASK(SDL_BUTTON_X2)) != 0 ||
-                     (mouseBtn & SDL_BUTTON_MASK(SDL_BUTTON_MIDDLE)) != 0 ||
-                     kbd[SDL_SCANCODE_E];
-
-        xemu_input_update_jvs_player(jvs, 0, offscreen, trigger, reload,
-                                     start, p1_service, coin,
-                                     push2, false,
-                                     winW > 0 ? mx / winW : 0,
-                                     winH > 0 ? my / winH : 0);
+        xemu_input_update_jvs_player(jvs, p, offscreen, trigger, reload,
+                                     a->start, a->service, a->coin,
+                                     a->push2, a->push3, a->ax, a->ay);
     }
 
     jvs->system_switches = kbd[SDL_SCANCODE_F2] ? 0x80 : 0x00;

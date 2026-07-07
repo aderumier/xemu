@@ -26,6 +26,7 @@
 
 #include <libudev.h>
 #include <linux/input.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
@@ -542,10 +543,72 @@ static bool scan_config_devices(void)
     return any_configured;
 }
 
+/*
+ * List every input device exposing ABS_X/ABS_Y, from sysfs (readable
+ * without device permissions). Helps picking the aim node when a
+ * merged/virtual gun device carries the buttons but not the position
+ * (e.g. Batocera virtual guns: aim stays on the gun's real mouse
+ * node).
+ */
+static void log_abs_candidates(void)
+{
+    DIR *dir = opendir("/sys/class/input");
+    if (!dir) {
+        return;
+    }
+
+    struct dirent *ent;
+    while ((ent = readdir(dir))) {
+        if (strncmp(ent->d_name, "event", 5) != 0) {
+            continue;
+        }
+
+        char path[PATH_MAX];
+        char buf[256] = { 0 };
+
+        snprintf(path, sizeof(path),
+                 "/sys/class/input/%s/device/capabilities/abs", ent->d_name);
+        FILE *f = fopen(path, "r");
+        if (!f) {
+            continue;
+        }
+        bool ok = fgets(buf, sizeof(buf), f) != NULL;
+        fclose(f);
+        if (!ok) {
+            continue;
+        }
+
+        /* Last space-separated hex group holds bits 0..63; ABS_X and
+         * ABS_Y are bits 0 and 1 */
+        char *last = strrchr(g_strchomp(buf), ' ');
+        unsigned long long bits = strtoull(last ? last + 1 : buf, NULL, 16);
+        if ((bits & 0x3) != 0x3) {
+            continue;
+        }
+
+        char name[128] = "?";
+        snprintf(path, sizeof(path), "/sys/class/input/%s/device/name",
+                 ent->d_name);
+        f = fopen(path, "r");
+        if (f) {
+            if (fgets(name, sizeof(name), f)) {
+                g_strchomp(name);
+            }
+            fclose(f);
+        }
+
+        fprintf(stderr,
+                "evdev-gun: aim-capable device: /dev/input/%s '%s'\n",
+                ent->d_name, name);
+    }
+    closedir(dir);
+}
+
 static void scan_devices(void)
 {
     scanned = true;
 
+    log_abs_candidates();
     parse_button_bindings();
 
     if (scan_config_devices()) {

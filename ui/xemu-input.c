@@ -568,22 +568,26 @@ typedef struct JvsPlayerAgg {
     bool aim_valid;   /* a source is providing absolute aim this frame */
     bool has_gun;     /* a light gun is assigned to this player */
     float ax, ay;     /* aim, normalized 0..1 (top-left origin) */
-    bool pad_analog;  /* a gamepad is providing driving-style analog */
-    uint16_t steer;   /* JVS analog ch0: left stick X, 0x8000 centered */
-    uint16_t accel;   /* JVS analog ch1: right trigger, 0..0xFFFF */
-    uint16_t brake;   /* JVS analog ch2: left trigger, 0..0xFFFF */
+    bool pad_present;   /* a gamepad is assigned to this player */
+    bool pad_stick_aim; /* right stick is being used for gun aim */
+    uint16_t steer;     /* JVS analog ch0: left stick X, 0x8000 centered */
+    uint16_t accel;     /* JVS analog ch1: right trigger, 0..0xFFFF */
+    uint16_t brake;     /* JVS analog ch2: left trigger, 0..0xFFFF */
 } JvsPlayerAgg;
 
 /* Add one SDL gamepad's buttons (and, if no other aim source, right-stick
  * aim as a virtual crosshair) to a player's aggregate. */
 static void jvs_add_gamepad(JvsPlayerAgg *a, SDL_Gamepad *gp)
 {
-    if (SDL_GetGamepadButton(gp, SDL_GAMEPAD_BUTTON_SOUTH) ||
-        SDL_GetGamepadAxis(gp, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 16000)
-        a->trigger = true;
-    if (SDL_GetGamepadButton(gp, SDL_GAMEPAD_BUTTON_EAST) ||
-        SDL_GetGamepadAxis(gp, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 16000)
-        a->reload = true;
+    a->pad_present = true;
+
+    /* Digital buttons on the face/shoulder buttons only. The triggers
+     * are reserved for the analog pedals below, so they don't also fire
+     * a digital button (which would double-bind in driving games). */
+    if (SDL_GetGamepadButton(gp, SDL_GAMEPAD_BUTTON_SOUTH))
+        a->trigger = true;   /* shoot / push 1 */
+    if (SDL_GetGamepadButton(gp, SDL_GAMEPAD_BUTTON_EAST))
+        a->reload = true;    /* reload / push 2 */
     if (SDL_GetGamepadButton(gp, SDL_GAMEPAD_BUTTON_START))
         a->start = true;
     if (SDL_GetGamepadButton(gp, SDL_GAMEPAD_BUTTON_BACK))
@@ -598,24 +602,24 @@ static void jvs_add_gamepad(JvsPlayerAgg *a, SDL_Gamepad *gp)
 
     /* Driving-style analog: left stick steers, triggers are the pedals.
      * Feeds the JVS analog channels for wheel games (Crazy Taxi, Outrun,
-     * Wangan). Used when the player has no light-gun aim. */
+     * Wangan). */
     int lx = SDL_GetGamepadAxis(gp, SDL_GAMEPAD_AXIS_LEFTX);          /* -32768..32767 */
     int rt = SDL_GetGamepadAxis(gp, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);  /* 0..32767 */
     int lt = SDL_GetGamepadAxis(gp, SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
     a->steer = (uint16_t)MIN(MAX(0x8000 + lx, 0), 0xFFFF);
     a->accel = (uint16_t)((uint32_t)(rt < 0 ? 0 : rt) * 0xFFFF / 32767);
     a->brake = (uint16_t)((uint32_t)(lt < 0 ? 0 : lt) * 0xFFFF / 32767);
-    a->pad_analog = true;
 
-    /* Gamepad-only aim: right stick deflection maps to screen position.
-     * Suppressed when a gun or the mouse already owns this player's aim. */
-    if (!a->aim_valid && !a->has_gun) {
+    /* Right stick aims (gamepad-as-light-gun); when used it takes over the
+     * analog channels from the driving pedals. */
+    if (!a->has_gun) {
         float sx = SDL_GetGamepadAxis(gp, SDL_GAMEPAD_AXIS_RIGHTX) / 32767.0f;
         float sy = SDL_GetGamepadAxis(gp, SDL_GAMEPAD_AXIS_RIGHTY) / 32767.0f;
         if (sx * sx + sy * sy > 0.04f) {   /* outside a 20% dead zone */
             a->ax = MIN(MAX(0.5f + 0.5f * sx, 0.0f), 1.0f);
             a->ay = MIN(MAX(0.5f + 0.5f * sy, 0.0f), 1.0f);
             a->aim_valid = true;
+            a->pad_stick_aim = true;
         }
     }
 }
@@ -719,20 +723,27 @@ static void xemu_input_update_jvs_lightgun(void)
         }
 
         /*
-         * JVS analog channels. A light gun (or mouse) owns channels
-         * p*2 and p*2+1 as X/Y. Otherwise a gamepad drives driving-style
-         * analog: steering on ch p*2, accelerator on p*2+1, and brake on
-         * ch2 for player 0. Untouched channels stay centered (0x8000).
+         * JVS analog channels.
+         *   - A real light gun owns channels p*2 / p*2+1 as X/Y.
+         *   - Otherwise, a gamepad with the right stick idle drives
+         *     driving-style analog (steering p*2, accel p*2+1, brake ch2
+         *     for player 0). This wins over the mouse so a wheel game's
+         *     pedals aren't hijacked by the cursor position.
+         *   - Otherwise the mouse / right-stick aim owns X/Y.
          */
-        if (a->aim_valid) {
-            jvs->analog[p * 2 + 0] = (uint16_t)(a->ax * 0xFFFF);
-            jvs->analog[p * 2 + 1] = (uint16_t)(a->ay * 0xFFFF);
-        } else if (a->pad_analog) {
+        bool driving = a->pad_present && !a->has_gun && !a->pad_stick_aim;
+        if (a->has_gun) {
+            jvs->analog[p * 2 + 0] = a->aim_valid ? (uint16_t)(a->ax * 0xFFFF) : 0;
+            jvs->analog[p * 2 + 1] = a->aim_valid ? (uint16_t)(a->ay * 0xFFFF) : 0;
+        } else if (driving) {
             jvs->analog[p * 2 + 0] = a->steer;
             jvs->analog[p * 2 + 1] = a->accel;
             if (p == 0) {
                 jvs->analog[2] = a->brake;
             }
+        } else if (a->aim_valid) {
+            jvs->analog[p * 2 + 0] = (uint16_t)(a->ax * 0xFFFF);
+            jvs->analog[p * 2 + 1] = (uint16_t)(a->ay * 0xFFFF);
         } else {
             jvs->analog[p * 2 + 0] = 0;
             jvs->analog[p * 2 + 1] = 0;

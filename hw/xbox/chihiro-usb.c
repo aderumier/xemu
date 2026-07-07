@@ -25,9 +25,14 @@
 #include "qapi/error.h"
 
 #include "qemu/timer.h"
+#include "ui/xemu-settings.h"
 #include "chihiro-firmware.h"
 #include "chihiro-jvs.h"
 #define TS_MS ((long long)(qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL)))
+
+static void chihiro_backup_load(uint8_t *ic11, size_t len);
+static void chihiro_backup_save(const uint8_t *ic11, size_t len);
+
 #define DEBUG_CUSB
 #ifdef DEBUG_CUSB
 #define DPRINTF(s, ...) do { } while(0)
@@ -739,6 +744,8 @@ static void handle_data(USBDevice *dev, USBPacket *p)
                 if (copy > 0) {
                     memcpy(s->ic11 + addr, buf, copy);
                     s->write_1e_addr += copy;
+                    /* Persist settings so they survive a reboot */
+                    chihiro_backup_save(s->ic11, sizeof(s->ic11));
                 }
             } else if (ep == 3) {
                 /* EP3 OUT: external memory write (from vendor 0x1F) */
@@ -852,6 +859,86 @@ static uint8_t chihiro_region_from_bootid(void)
     return region;
 }
 
+/*
+ * Backup memory (ic11 baseboard EEPROM) persistence.
+ *
+ * Chihiro games save test-menu settings, coin/credit config and
+ * bookkeeping into the 24LC024 baseboard EEPROM (ic11). To make those
+ * survive across sessions, the ic11 buffer is loaded from and flushed
+ * to a per-game file in xemu's data directory, named by the game ID
+ * read from boot.id (offset 0x30). Falls back to the baked-in default
+ * dump when no backup exists yet.
+ */
+static bool chihiro_backup_path(char *out, size_t out_len)
+{
+    extern char chihiro_game_dir[1024];
+    char game_id[16] = "default";
+
+    if (chihiro_game_dir[0]) {
+        char bootid[1100];
+        snprintf(bootid, sizeof(bootid), "%s/boot.id", chihiro_game_dir);
+        FILE *f = fopen(bootid, "rb");
+        if (f) {
+            uint8_t bid[0x40];
+            if (fread(bid, 1, sizeof(bid), f) == sizeof(bid) &&
+                memcmp(bid, "BTID", 4) == 0) {
+                /* gameId: up to 8 chars at 0x30, keep alnum only */
+                int n = 0;
+                for (int i = 0; i < 8 && n < (int)sizeof(game_id) - 1; i++) {
+                    uint8_t c = bid[0x30 + i];
+                    if (g_ascii_isalnum(c)) {
+                        game_id[n++] = c;
+                    }
+                }
+                game_id[n] = '\0';
+                if (n == 0) {
+                    snprintf(game_id, sizeof(game_id), "default");
+                }
+            }
+            fclose(f);
+        }
+    }
+
+    const char *base = xemu_settings_get_base_path();
+    if (!base) {
+        return false;
+    }
+    snprintf(out, out_len, "%schihiro_%s_backup.bin", base, game_id);
+    return true;
+}
+
+static void chihiro_backup_load(uint8_t *ic11, size_t len)
+{
+    char path[1024];
+    if (!chihiro_backup_path(path, sizeof(path))) {
+        return;
+    }
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        return;
+    }
+    size_t rd = fread(ic11, 1, len, f);
+    fclose(f);
+    printf("[%07lld] Chihiro: loaded backup memory (%zu bytes) from %s\n",
+           TS_MS, rd, path);
+}
+
+static void chihiro_backup_save(const uint8_t *ic11, size_t len)
+{
+    char path[1024];
+    if (!chihiro_backup_path(path, sizeof(path))) {
+        return;
+    }
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        fprintf(stderr, "Chihiro: cannot write backup memory to %s: %s\n",
+                path, strerror(errno));
+        return;
+    }
+    fwrite(ic11, 1, len, f);
+    fclose(f);
+}
+
 static void chihiro_an2131qc_realize(USBDevice *dev, Error **errp)
 {
     ChihiroUSBState *s = (ChihiroUSBState *)dev;
@@ -878,6 +965,8 @@ static void chihiro_an2131qc_realize(USBDevice *dev, Error **errp)
                    "ic11 EEPROM dump must be exactly 128 bytes");
     memset(s->ic11, 0, sizeof(s->ic11));
     memcpy(s->ic11, hotd3_ic11_24lc024, sizeof(hotd3_ic11_24lc024));
+    /* Overlay persisted settings if a backup exists for this game */
+    chihiro_backup_load(s->ic11, sizeof(s->ic11));
     memset(s->extmem, 0, sizeof(s->extmem));
     s->write_1e_addr = 0;
     s->write_1f_addr = 0;
@@ -949,6 +1038,8 @@ static void chihiro_an2131sc_realize(USBDevice *dev, Error **errp)
     /* Load ic11 baseboard EEPROM (256 bytes, 24LC024) */
     memset(s->ic11, 0, sizeof(s->ic11));
     memcpy(s->ic11, hotd3_ic11_24lc024, sizeof(hotd3_ic11_24lc024));
+    /* Overlay persisted settings if a backup exists for this game */
+    chihiro_backup_load(s->ic11, sizeof(s->ic11));
     memset(s->extmem, 0, sizeof(s->extmem));
     s->write_1e_addr = 0;
     s->write_1f_addr = 0;

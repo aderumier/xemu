@@ -557,21 +557,21 @@ void xemu_input_update_sdl_kbd_controller_state(ControllerState *state)
         }
 
         uint32_t gunBtn = xemu_input_evdev_gun_get_buttons(0);
-        if (gunBtn & EVDEV_GUN_BTN_TRIGGER)
+        if (gunBtn & EVDEV_GUN_BTN_A)
             state->lg.buttons |= CONTROLLER_BUTTON_A;
-        if (gunBtn & EVDEV_GUN_BTN_RELOAD)
+        if (gunBtn & EVDEV_GUN_BTN_B)
             state->lg.buttons |= CONTROLLER_BUTTON_B;
-        if (gunBtn & EVDEV_GUN_BTN_AUX)
-            state->lg.buttons |= CONTROLLER_BUTTON_START;
-        if (gunBtn & EVDEV_GUN_BTN_1)
-            state->lg.buttons |= CONTROLLER_BUTTON_BACK;
-        if (gunBtn & EVDEV_GUN_BTN_2)
+        if (gunBtn & EVDEV_GUN_BTN_X)
             state->lg.buttons |= CONTROLLER_BUTTON_X;
-        if (gunBtn & EVDEV_GUN_BTN_3)
+        if (gunBtn & EVDEV_GUN_BTN_Y)
             state->lg.buttons |= CONTROLLER_BUTTON_Y;
-        if (gunBtn & EVDEV_GUN_BTN_4)
+        if (gunBtn & EVDEV_GUN_BTN_START)
+            state->lg.buttons |= CONTROLLER_BUTTON_START;
+        if (gunBtn & EVDEV_GUN_BTN_BACK)
+            state->lg.buttons |= CONTROLLER_BUTTON_BACK;
+        if (gunBtn & EVDEV_GUN_BTN_WHITE)
             state->lg.buttons |= CONTROLLER_BUTTON_WHITE;
-        if (gunBtn & EVDEV_GUN_BTN_5)
+        if (gunBtn & EVDEV_GUN_BTN_BLACK)
             state->lg.buttons |= CONTROLLER_BUTTON_BLACK;
 
         if (kbd[g_config.input.keyboard_controller_scancode_map.a])

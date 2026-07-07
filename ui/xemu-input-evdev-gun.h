@@ -34,17 +34,18 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define EVDEV_GUN_BTN_TRIGGER (1 << 0)  /* BTN_LEFT / BTN_TRIGGER */
-#define EVDEV_GUN_BTN_RELOAD  (1 << 1)  /* BTN_RIGHT / BTN_THUMB */
-#define EVDEV_GUN_BTN_AUX     (1 << 2)  /* BTN_MIDDLE / BTN_THUMB2 */
-#define EVDEV_GUN_BTN_1       (1 << 3)
-#define EVDEV_GUN_BTN_2       (1 << 4)
-#define EVDEV_GUN_BTN_3       (1 << 5)
-#define EVDEV_GUN_BTN_4       (1 << 6)
-#define EVDEV_GUN_BTN_5       (1 << 7)
-#define EVDEV_GUN_BTN_6       (1 << 8)
-#define EVDEV_GUN_BTN_7       (1 << 9)
-#define EVDEV_GUN_BTN_8       (1 << 10)
+/*
+ * Xbox-semantic button masks. Which evdev codes drive which mask is
+ * configured via input.lightgun.gun_buttons.* (see config_spec.yml).
+ */
+#define EVDEV_GUN_BTN_A     (1 << 0)  /* trigger */
+#define EVDEV_GUN_BTN_B     (1 << 1)  /* reload */
+#define EVDEV_GUN_BTN_X     (1 << 2)
+#define EVDEV_GUN_BTN_Y     (1 << 3)
+#define EVDEV_GUN_BTN_START (1 << 4)
+#define EVDEV_GUN_BTN_BACK  (1 << 5)
+#define EVDEV_GUN_BTN_WHITE (1 << 6)
+#define EVDEV_GUN_BTN_BLACK (1 << 7)
 
 #if defined(__linux__) && defined(CONFIG_LIBUDEV)
 

@@ -31,6 +31,7 @@
 #include <errno.h>
 
 #define MAX_GUNS 4
+#define MAX_GUN_NODES 4
 
 #define BITS_PER_LONG (sizeof(unsigned long) * 8)
 #define NBITS(x) (((x) + BITS_PER_LONG - 1) / BITS_PER_LONG)
@@ -44,13 +45,19 @@ typedef struct EvdevGunAxis {
 } EvdevGunAxis;
 
 typedef struct EvdevGun {
-    int fd;
-    char devnode[64];
+    int fds[MAX_GUN_NODES];  /* a gun may span several event nodes */
+    int num_fds;
+    char devnode[128];       /* first node, for display */
     EvdevGunAxis x;
     EvdevGunAxis y;
     uint32_t buttons;
-    bool has_touch;   /* device reports BTN_TOUCH (offscreen indicator) */
+    bool has_abs;
+    bool has_rel;
+    bool has_touch;   /* some node reports BTN_TOUCH (offscreen indicator) */
     bool touch;
+    bool touch_seen;  /* a BTN_TOUCH event (or pressed initial state) was
+                         actually observed; some devices advertise BTN_TOUCH
+                         in their descriptor but never emit it */
     bool rel_axes;    /* relative mouse: axes are synthetic, driven by
                          integrating REL_X/REL_Y deltas */
 } EvdevGun;
@@ -67,37 +74,156 @@ static EvdevGun guns[MAX_GUNS];
 static int num_guns;
 static bool scanned;
 
+/*
+ * Evdev code names accepted in the input.lightgun.gun_buttons config
+ * (raw decimal/hex codes are accepted too).
+ */
+static const struct {
+    const char *name;
+    uint16_t code;
+} btn_names[] = {
+    /* Mouse */
+    { "BTN_LEFT", BTN_LEFT },       { "BTN_RIGHT", BTN_RIGHT },
+    { "BTN_MIDDLE", BTN_MIDDLE },   { "BTN_SIDE", BTN_SIDE },
+    { "BTN_EXTRA", BTN_EXTRA },     { "BTN_FORWARD", BTN_FORWARD },
+    { "BTN_BACK", BTN_BACK },       { "BTN_TASK", BTN_TASK },
+    /* Joystick */
+    { "BTN_TRIGGER", BTN_TRIGGER }, { "BTN_THUMB", BTN_THUMB },
+    { "BTN_THUMB2", BTN_THUMB2 },   { "BTN_TOP", BTN_TOP },
+    { "BTN_TOP2", BTN_TOP2 },       { "BTN_PINKIE", BTN_PINKIE },
+    { "BTN_BASE", BTN_BASE },       { "BTN_BASE2", BTN_BASE2 },
+    { "BTN_BASE3", BTN_BASE3 },     { "BTN_BASE4", BTN_BASE4 },
+    { "BTN_BASE5", BTN_BASE5 },     { "BTN_BASE6", BTN_BASE6 },
+    { "BTN_DEAD", BTN_DEAD },
+    /* Gamepad (guns in XInput mode) */
+    { "BTN_SOUTH", BTN_SOUTH },     { "BTN_EAST", BTN_EAST },
+    { "BTN_NORTH", BTN_NORTH },     { "BTN_WEST", BTN_WEST },
+    { "BTN_C", BTN_C },             { "BTN_Z", BTN_Z },
+    { "BTN_TL", BTN_TL },           { "BTN_TR", BTN_TR },
+    { "BTN_TL2", BTN_TL2 },         { "BTN_TR2", BTN_TR2 },
+    { "BTN_SELECT", BTN_SELECT },   { "BTN_START", BTN_START },
+    { "BTN_MODE", BTN_MODE },       { "BTN_THUMBL", BTN_THUMBL },
+    { "BTN_THUMBR", BTN_THUMBR },
+    /* Misc BTN_0..BTN_9 */
+    { "BTN_0", BTN_0 }, { "BTN_1", BTN_1 }, { "BTN_2", BTN_2 },
+    { "BTN_3", BTN_3 }, { "BTN_4", BTN_4 }, { "BTN_5", BTN_5 },
+    { "BTN_6", BTN_6 }, { "BTN_7", BTN_7 }, { "BTN_8", BTN_8 },
+    { "BTN_9", BTN_9 },
+    /* Digitizer */
+    { "BTN_TOUCH", BTN_TOUCH },     { "BTN_STYLUS", BTN_STYLUS },
+    { "BTN_STYLUS2", BTN_STYLUS2 },
+    { "BTN_TRIGGER_HAPPY1", BTN_TRIGGER_HAPPY1 },
+    { "BTN_TRIGGER_HAPPY2", BTN_TRIGGER_HAPPY2 },
+    { "BTN_TRIGGER_HAPPY3", BTN_TRIGGER_HAPPY3 },
+    { "BTN_TRIGGER_HAPPY4", BTN_TRIGGER_HAPPY4 },
+    /* Keys sometimes used by gun keyboard interfaces */
+    { "KEY_ENTER", KEY_ENTER },     { "KEY_ESC", KEY_ESC },
+    { "KEY_SPACE", KEY_SPACE },     { "KEY_LEFTSHIFT", KEY_LEFTSHIFT },
+    { "KEY_LEFTCTRL", KEY_LEFTCTRL }, { "KEY_LEFTALT", KEY_LEFTALT },
+    { "KEY_UP", KEY_UP },           { "KEY_DOWN", KEY_DOWN },
+    { "KEY_LEFT", KEY_LEFT },       { "KEY_RIGHT", KEY_RIGHT },
+    { "KEY_1", KEY_1 }, { "KEY_2", KEY_2 }, { "KEY_3", KEY_3 },
+    { "KEY_4", KEY_4 }, { "KEY_5", KEY_5 },
+};
+
+static int btn_code_for_name(const char *name)
+{
+    for (size_t i = 0; i < ARRAY_SIZE(btn_names); i++) {
+        if (g_ascii_strcasecmp(name, btn_names[i].name) == 0) {
+            return btn_names[i].code;
+        }
+    }
+
+    /* Raw decimal or 0x-prefixed code */
+    char *end;
+    long code = strtol(name, &end, 0);
+    if (end != name && *end == '\0' && code > 0 && code <= KEY_MAX) {
+        return (int)code;
+    }
+    return -1;
+}
+
+static const char *btn_name_for_code(uint16_t code)
+{
+    for (size_t i = 0; i < ARRAY_SIZE(btn_names); i++) {
+        if (btn_names[i].code == code) {
+            return btn_names[i].name;
+        }
+    }
+    return NULL;
+}
+
+/* evdev code -> Xbox button mask bindings, built from the config */
+static struct {
+    uint16_t code;
+    uint32_t mask;
+} code_map[64];
+static int code_map_len;
+
+static void code_map_add(uint16_t code, uint32_t mask)
+{
+    for (int i = 0; i < code_map_len; i++) {
+        if (code_map[i].code == code) {
+            code_map[i].mask |= mask;
+            return;
+        }
+    }
+    if (code_map_len < (int)ARRAY_SIZE(code_map)) {
+        code_map[code_map_len].code = code;
+        code_map[code_map_len].mask = mask;
+        code_map_len++;
+    }
+}
+
 static uint32_t button_mask_for_code(uint16_t code)
 {
-    switch (code) {
-    /* Mouse-class devices (Sinden, Gun4IR, DolphinBar, plain mice) */
-    case BTN_LEFT:    return EVDEV_GUN_BTN_TRIGGER;
-    case BTN_RIGHT:   return EVDEV_GUN_BTN_RELOAD;
-    case BTN_MIDDLE:  return EVDEV_GUN_BTN_AUX;
-    case BTN_SIDE:    return EVDEV_GUN_BTN_1;
-    case BTN_EXTRA:   return EVDEV_GUN_BTN_2;
-    case BTN_FORWARD: return EVDEV_GUN_BTN_3;
-    case BTN_BACK:    return EVDEV_GUN_BTN_4;
-    case BTN_TASK:    return EVDEV_GUN_BTN_5;
-    /* Joystick-class devices (AimTrak and other HID guns) */
-    case BTN_TRIGGER: return EVDEV_GUN_BTN_TRIGGER;
-    case BTN_THUMB:   return EVDEV_GUN_BTN_RELOAD;
-    case BTN_THUMB2:  return EVDEV_GUN_BTN_AUX;
-    case BTN_TOP:     return EVDEV_GUN_BTN_1;
-    case BTN_TOP2:    return EVDEV_GUN_BTN_2;
-    case BTN_PINKIE:  return EVDEV_GUN_BTN_3;
-    case BTN_BASE:    return EVDEV_GUN_BTN_4;
-    case BTN_BASE2:   return EVDEV_GUN_BTN_5;
-    /* Misc BTN_0..BTN_9 range */
-    case BTN_1:       return EVDEV_GUN_BTN_1;
-    case BTN_2:       return EVDEV_GUN_BTN_2;
-    case BTN_3:       return EVDEV_GUN_BTN_3;
-    case BTN_4:       return EVDEV_GUN_BTN_4;
-    case BTN_5:       return EVDEV_GUN_BTN_5;
-    case BTN_6:       return EVDEV_GUN_BTN_6;
-    case BTN_7:       return EVDEV_GUN_BTN_7;
-    case BTN_8:       return EVDEV_GUN_BTN_8;
-    default:          return 0;
+    for (int i = 0; i < code_map_len; i++) {
+        if (code_map[i].code == code) {
+            return code_map[i].mask;
+        }
+    }
+    return 0;
+}
+
+static void parse_button_bindings(void)
+{
+    const struct {
+        const char *value;
+        uint32_t mask;
+        const char *label;
+    } bindings[] = {
+        { g_config.input.lightgun.gun_buttons.a,     EVDEV_GUN_BTN_A,     "a" },
+        { g_config.input.lightgun.gun_buttons.b,     EVDEV_GUN_BTN_B,     "b" },
+        { g_config.input.lightgun.gun_buttons.x,     EVDEV_GUN_BTN_X,     "x" },
+        { g_config.input.lightgun.gun_buttons.y,     EVDEV_GUN_BTN_Y,     "y" },
+        { g_config.input.lightgun.gun_buttons.start, EVDEV_GUN_BTN_START, "start" },
+        { g_config.input.lightgun.gun_buttons.back,  EVDEV_GUN_BTN_BACK,  "back" },
+        { g_config.input.lightgun.gun_buttons.white, EVDEV_GUN_BTN_WHITE, "white" },
+        { g_config.input.lightgun.gun_buttons.black, EVDEV_GUN_BTN_BLACK, "black" },
+    };
+
+    code_map_len = 0;
+
+    for (size_t i = 0; i < ARRAY_SIZE(bindings); i++) {
+        if (!bindings[i].value || !bindings[i].value[0]) {
+            continue;
+        }
+        char **tokens = g_strsplit(bindings[i].value, ",", -1);
+        for (int t = 0; tokens[t]; t++) {
+            const char *name = g_strstrip(tokens[t]);
+            if (!name[0]) {
+                continue;
+            }
+            int code = btn_code_for_name(name);
+            if (code < 0) {
+                fprintf(stderr,
+                        "evdev-gun: gun_buttons.%s: unknown code '%s'\n",
+                        bindings[i].label, name);
+            } else {
+                code_map_add(code, bindings[i].mask);
+            }
+        }
+        g_strfreev(tokens);
     }
 }
 
@@ -117,15 +243,41 @@ static int devnode_cmp(const void *a, const void *b)
     return strcmp(x, y);
 }
 
-static bool gun_open(const char *devnode, bool allow_relative)
+static void log_node_buttons(const char *devnode, const unsigned long *keybits)
+{
+    char buf[512];
+    int len = 0;
+
+    for (int code = 0; code <= KEY_MAX && len < (int)sizeof(buf) - 32;
+         code++) {
+        if (!TEST_BIT(code, keybits)) {
+            continue;
+        }
+        const char *name = btn_name_for_code(code);
+        if (name) {
+            len += snprintf(buf + len, sizeof(buf) - len, " %s", name);
+        } else if (code >= BTN_MISC) {
+            len += snprintf(buf + len, sizeof(buf) - len, " 0x%x", code);
+        }
+    }
+    if (len > 0) {
+        fprintf(stderr, "evdev-gun:   %s buttons:%s\n", devnode, buf);
+    }
+}
+
+/*
+ * Open one event node and attach it to `gun`. The first node exposing
+ * ABS_X/ABS_Y provides the aim axes; every node contributes button
+ * events.
+ */
+static bool gun_node_open(EvdevGun *gun, const char *devnode)
 {
     unsigned long absbits[NBITS(ABS_MAX + 1)] = { 0 };
     unsigned long relbits[NBITS(REL_MAX + 1)] = { 0 };
     unsigned long keybits[NBITS(KEY_MAX + 1)] = { 0 };
     struct input_absinfo absinfo;
-    EvdevGun *gun;
 
-    if (num_guns >= MAX_GUNS) {
+    if (gun->num_fds >= MAX_GUN_NODES) {
         return false;
     }
 
@@ -136,22 +288,12 @@ static bool gun_open(const char *devnode, bool allow_relative)
         return false;
     }
 
-    bool has_abs = ioctl(fd, EVIOCGBIT(EV_ABS, sizeof(absbits)), absbits) >= 0 &&
-                   TEST_BIT(ABS_X, absbits) && TEST_BIT(ABS_Y, absbits);
-    bool has_rel = ioctl(fd, EVIOCGBIT(EV_REL, sizeof(relbits)), relbits) >= 0 &&
-                   TEST_BIT(REL_X, relbits) && TEST_BIT(REL_Y, relbits);
+    bool node_abs = ioctl(fd, EVIOCGBIT(EV_ABS, sizeof(absbits)), absbits) >= 0 &&
+                    TEST_BIT(ABS_X, absbits) && TEST_BIT(ABS_Y, absbits);
+    bool node_rel = ioctl(fd, EVIOCGBIT(EV_REL, sizeof(relbits)), relbits) >= 0 &&
+                    TEST_BIT(REL_X, relbits) && TEST_BIT(REL_Y, relbits);
 
-    if (!has_abs && !(allow_relative && has_rel)) {
-        close(fd);
-        return false;
-    }
-
-    gun = &guns[num_guns];
-    memset(gun, 0, sizeof(*gun));
-    gun->fd = fd;
-    snprintf(gun->devnode, sizeof(gun->devnode), "%s", devnode);
-
-    if (has_abs) {
+    if (node_abs && !gun->has_abs) {
         if (ioctl(fd, EVIOCGABS(ABS_X), &absinfo) == 0) {
             gun->x.min = absinfo.minimum;
             gun->x.max = absinfo.maximum;
@@ -162,33 +304,89 @@ static bool gun_open(const char *devnode, bool allow_relative)
             gun->y.max = absinfo.maximum;
             gun->y.value = absinfo.value;
         }
-    } else {
-        // Relative mouse: synthesize a centered virtual axis that
-        // gun_drain_events() drives from REL_X/REL_Y deltas
+        gun->has_abs = true;
+    }
+    gun->has_rel |= node_rel;
+
+    if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(keybits)), keybits) >= 0) {
+        if (TEST_BIT(BTN_TOUCH, keybits)) {
+            gun->has_touch = true;
+            unsigned long keystate[NBITS(KEY_MAX + 1)] = { 0 };
+            if (ioctl(fd, EVIOCGKEY(sizeof(keystate)), keystate) >= 0 &&
+                TEST_BIT(BTN_TOUCH, keystate)) {
+                gun->touch = true;
+                gun->touch_seen = true;
+            }
+        }
+        log_node_buttons(devnode, keybits);
+    }
+
+    if (gun->num_fds == 0) {
+        snprintf(gun->devnode, sizeof(gun->devnode), "%s", devnode);
+    }
+    gun->fds[gun->num_fds++] = fd;
+    return true;
+}
+
+static void gun_close(EvdevGun *gun)
+{
+    for (int i = 0; i < gun->num_fds; i++) {
+        close(gun->fds[i]);
+    }
+    memset(gun, 0, sizeof(*gun));
+}
+
+/*
+ * Finish setting up a gun once all of its nodes are open. Without any
+ * absolute axes, synthesize a centered virtual axis driven by relative
+ * deltas (allow_relative permitting). Returns false (and rolls back)
+ * if the gun ends up unusable.
+ */
+static bool gun_finalize(EvdevGun *gun, bool allow_relative)
+{
+    if (gun->num_fds == 0) {
+        return false;
+    }
+
+    if (!gun->has_abs) {
+        if (!(allow_relative && gun->has_rel)) {
+            gun_close(gun);
+            return false;
+        }
         gun->rel_axes = true;
+        gun->x.min = 0;
         gun->x.max = REL_AXIS_RANGE;
         gun->x.value = REL_AXIS_RANGE / 2;
+        gun->y.min = 0;
         gun->y.max = REL_AXIS_RANGE;
         gun->y.value = REL_AXIS_RANGE / 2;
     }
 
-    if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(keybits)), keybits) >= 0) {
-        gun->has_touch = TEST_BIT(BTN_TOUCH, keybits);
-    }
-    if (gun->has_touch) {
-        unsigned long keystate[NBITS(KEY_MAX + 1)] = { 0 };
-        if (ioctl(fd, EVIOCGKEY(sizeof(keystate)), keystate) >= 0) {
-            gun->touch = TEST_BIT(BTN_TOUCH, keystate);
-        }
-    }
-
     fprintf(stderr,
-            "evdev-gun: gun %d: %s, ABS_X(%d, %d), ABS_Y(%d, %d)%s%s\n",
-            num_guns, devnode, gun->x.min, gun->x.max, gun->y.min,
-            gun->y.max, gun->rel_axes ? " [relative mouse]" : "",
+            "evdev-gun: gun %d: %s (%d node%s), ABS_X(%d, %d), "
+            "ABS_Y(%d, %d)%s%s\n",
+            num_guns, gun->devnode, gun->num_fds,
+            gun->num_fds > 1 ? "s" : "", gun->x.min, gun->x.max,
+            gun->y.min, gun->y.max,
+            gun->rel_axes ? " [relative mouse]" : "",
             gun->has_touch ? ", BTN_TOUCH" : "");
     num_guns++;
     return true;
+}
+
+/* Single-node convenience used by the udev auto-detection path */
+static bool gun_open(const char *devnode, bool allow_relative)
+{
+    if (num_guns >= MAX_GUNS) {
+        return false;
+    }
+
+    EvdevGun *gun = &guns[num_guns];
+    memset(gun, 0, sizeof(*gun));
+    if (!gun_node_open(gun, devnode)) {
+        return false;
+    }
+    return gun_finalize(gun, allow_relative);
 }
 
 /*
@@ -259,11 +457,12 @@ static const char *resolve_devnode(const char *path, char *buf, size_t len)
 
 /*
  * Open guns explicitly listed in the config
- * (input.lightgun.gunN_device). Returns true if at least one device
- * was configured (even if it failed to open), in which case udev
- * auto-detection is skipped: an explicit config fully describes the
- * setup. Gun index follows config order, skipping devices that fail
- * to open.
+ * (input.lightgun.gunN_device). Each entry may be a comma-separated
+ * list of event nodes merged into a single gun (aim and buttons split
+ * across nodes). Returns true if at least one device was configured
+ * (even if it failed to open), in which case udev auto-detection is
+ * skipped: an explicit config fully describes the setup. Gun index
+ * follows config order, skipping devices that fail to open.
  */
 static bool scan_config_devices(void)
 {
@@ -275,15 +474,27 @@ static bool scan_config_devices(void)
     };
     bool any_configured = false;
 
-    for (int i = 0; i < MAX_GUNS; i++) {
+    for (int i = 0; i < MAX_GUNS && num_guns < MAX_GUNS; i++) {
         if (!paths[i] || !paths[i][0]) {
             continue;
         }
         any_configured = true;
 
-        char buf[64];
-        const char *devnode = resolve_devnode(paths[i], buf, sizeof(buf));
-        if (!gun_open(devnode, true)) {
+        EvdevGun *gun = &guns[num_guns];
+        memset(gun, 0, sizeof(*gun));
+
+        char **nodes = g_strsplit(paths[i], ",", -1);
+        for (int n = 0; nodes[n]; n++) {
+            const char *path = g_strstrip(nodes[n]);
+            if (!path[0]) {
+                continue;
+            }
+            char buf[64];
+            gun_node_open(gun, resolve_devnode(path, buf, sizeof(buf)));
+        }
+        g_strfreev(nodes);
+
+        if (!gun_finalize(gun, true)) {
             fprintf(stderr,
                     "evdev-gun: configured gun%d_device '%s' not usable\n",
                     i + 1, paths[i]);
@@ -295,6 +506,8 @@ static bool scan_config_devices(void)
 static void scan_devices(void)
 {
     scanned = true;
+
+    parse_button_bindings();
 
     if (scan_config_devices()) {
         return;
@@ -340,29 +553,62 @@ int xemu_input_evdev_gun_count(void)
     return num_guns;
 }
 
-static void gun_drain_events(EvdevGun *gun)
+static void log_unmapped_button(uint16_t code)
+{
+    static uint16_t seen[32];
+    static int seen_len;
+
+    for (int i = 0; i < seen_len; i++) {
+        if (seen[i] == code) {
+            return;
+        }
+    }
+    if (seen_len < (int)ARRAY_SIZE(seen)) {
+        seen[seen_len++] = code;
+    }
+
+    const char *name = btn_name_for_code(code);
+    if (name) {
+        fprintf(stderr,
+                "evdev-gun: unmapped button %s (code %d/0x%x) pressed; "
+                "bind it via input.lightgun.gun_buttons in xemu.toml\n",
+                name, code, code);
+    } else {
+        fprintf(stderr,
+                "evdev-gun: unmapped button code %d/0x%x pressed; "
+                "bind it via input.lightgun.gun_buttons in xemu.toml\n",
+                code, code);
+    }
+}
+
+static void gun_drain_node(EvdevGun *gun, int fd)
 {
     struct input_event evt;
 
     for (;;) {
-        ssize_t n = read(gun->fd, &evt, sizeof(evt));
+        ssize_t n = read(fd, &evt, sizeof(evt));
         if (n != sizeof(evt)) {
             break;
         }
 
         switch (evt.type) {
-        case EV_KEY:
+        case EV_KEY: {
             if (evt.code == BTN_TOUCH) {
                 gun->touch = evt.value != 0;
-            } else {
-                uint32_t mask = button_mask_for_code(evt.code);
+                gun->touch_seen = true;
+            }
+            uint32_t mask = button_mask_for_code(evt.code);
+            if (mask) {
                 if (evt.value) {
                     gun->buttons |= mask;
                 } else {
                     gun->buttons &= ~mask;
                 }
+            } else if (evt.code != BTN_TOUCH && evt.value == 1) {
+                log_unmapped_button(evt.code);
             }
             break;
+        }
         case EV_ABS:
             if (evt.code == ABS_X) {
                 gun->x.value = evt.value;
@@ -389,14 +635,17 @@ static void gun_drain_events(EvdevGun *gun)
 void xemu_input_evdev_gun_poll(void)
 {
     for (int i = 0; i < num_guns; i++) {
-        gun_drain_events(&guns[i]);
+        for (int n = 0; n < guns[i].num_fds; n++) {
+            gun_drain_node(&guns[i], guns[i].fds[n]);
+        }
     }
 }
 
 /*
  * Fraction of the axis range near each edge treated as offscreen for
- * absolute guns without BTN_TOUCH: when such a gun (e.g. Sinden) loses
- * the screen, its position pins at/near the axis extremes.
+ * absolute guns without (observed) BTN_TOUCH: when such a gun (e.g.
+ * Sinden) loses the screen, its position pins at/near the axis
+ * extremes.
  */
 #define EDGE_OFFSCREEN_MARGIN 0.02f
 
@@ -407,7 +656,15 @@ bool xemu_input_evdev_gun_get_pos(int index, float *x, float *y)
     }
 
     EvdevGun *gun = &guns[index];
-    if (gun->has_touch && !gun->touch) {
+
+    /*
+     * Only trust BTN_TOUCH as an offscreen indicator once the device
+     * has actually emitted it: plenty of HID descriptors advertise
+     * BTN_TOUCH without ever sending it, which would otherwise freeze
+     * the aim as permanently offscreen.
+     */
+    bool touch_valid = gun->has_touch && gun->touch_seen;
+    if (touch_valid && !gun->touch) {
         return false;
     }
 
@@ -420,7 +677,7 @@ bool xemu_input_evdev_gun_get_pos(int index, float *x, float *y)
     float fx = (float)(gun->x.value - gun->x.min) / range_x;
     float fy = (float)(gun->y.value - gun->y.min) / range_y;
 
-    if (!gun->rel_axes && !gun->has_touch &&
+    if (!gun->rel_axes && !touch_valid &&
         (fx < EDGE_OFFSCREEN_MARGIN || fx > 1.0f - EDGE_OFFSCREEN_MARGIN ||
          fy < EDGE_OFFSCREEN_MARGIN || fy > 1.0f - EDGE_OFFSCREEN_MARGIN)) {
         return false;

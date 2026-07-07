@@ -54,13 +54,44 @@ input:
   lightgun:
     # Explicit evdev device assignment for light guns (Linux only).
     # Accepts /dev/input/eventN, /sys/class/input/eventN, a bare
-    # "eventN", or a /dev/input/by-id/... symlink. When any gun device
+    # "eventN", or a /dev/input/by-id/... symlink. A comma-separated
+    # list merges several event nodes into one gun (for guns that
+    # report aim and buttons on separate nodes). When any gun device
     # is set, the udev auto-detection (ID_INPUT_GUN / absolute-axis
     # mice) is skipped entirely.
     gun1_device: string
     gun2_device: string
     gun3_device: string
     gun4_device: string
+    # Bind evdev button codes to Xbox light gun buttons. Each entry is
+    # a comma-separated list of evdev names (BTN_LEFT, BTN_TRIGGER,
+    # BTN_1, KEY_..., or a raw code like 0x121/289). Unmapped presses
+    # are logged on stderr with the name to bind. Empty = unbound.
+    gun_buttons:
+      a:
+        type: string
+        default: 'BTN_LEFT,BTN_TRIGGER'
+      b:
+        type: string
+        default: 'BTN_RIGHT,BTN_THUMB'
+      x:
+        type: string
+        default: 'BTN_EXTRA,BTN_TOP2,BTN_2'
+      y:
+        type: string
+        default: 'BTN_FORWARD,BTN_PINKIE,BTN_3'
+      start:
+        type: string
+        default: 'BTN_MIDDLE,BTN_THUMB2'
+      back:
+        type: string
+        default: 'BTN_SIDE,BTN_TOP,BTN_1'
+      white:
+        type: string
+        default: 'BTN_BACK,BTN_BASE,BTN_4'
+      black:
+        type: string
+        default: 'BTN_TASK,BTN_BASE2,BTN_5'
   gamecontrollerdb_path: string
   auto_bind:
     type: bool

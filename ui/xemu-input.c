@@ -594,7 +594,10 @@ static void xemu_input_update_jvs_lightgun(void)
                          (p == 0 && p1_start);
             bool coin = (gunBtn & EVDEV_GUN_BTN_1) != 0 ||
                         (p == 0 && kbd[SDL_SCANCODE_5]);
+            // Middle button doubles as push 4 (ES pedal): Start is only
+            // read in menus, ES only in-game, so they never conflict
             bool push2 = (gunBtn & EVDEV_GUN_BTN_2) != 0 ||
+                         (gunBtn & EVDEV_GUN_BTN_AUX) != 0 ||
                          (p == 0 && kbd[SDL_SCANCODE_E]);
             bool push3 = (gunBtn & EVDEV_GUN_BTN_3) != 0;
             xemu_input_update_jvs_player(jvs, p, offscreen, trigger, reload,
@@ -632,7 +635,9 @@ static void xemu_input_update_jvs_lightgun(void)
                      p1_start;
         bool coin = (mouseBtn & SDL_BUTTON_MASK(SDL_BUTTON_X1)) != 0 ||
                     kbd[SDL_SCANCODE_5];
+        // Middle button doubles as push 4 (ES pedal), like the evdev path
         bool push2 = (mouseBtn & SDL_BUTTON_MASK(SDL_BUTTON_X2)) != 0 ||
+                     (mouseBtn & SDL_BUTTON_MASK(SDL_BUTTON_MIDDLE)) != 0 ||
                      kbd[SDL_SCANCODE_E];
 
         xemu_input_update_jvs_player(jvs, 0, offscreen, trigger, reload,

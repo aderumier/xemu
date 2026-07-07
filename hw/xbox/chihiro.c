@@ -2266,6 +2266,8 @@ static void chihiro_dimm_event_timer_cb(void *opaque)
             cpu_physical_memory_write(meta_pa + 4, &resp_data, 4);
             if (cmd_opcode == 0x0100)
                 cpu_physical_memory_write(meta_pa + 8, &resp_data2, 4);
+            if (cmd_opcode == 0x0103)  /* full 16-byte valid-format serial */
+                cpu_physical_memory_write(meta_pa + 4, "AAEE-01A00000001", 16);
             s->mbcom_e0_status |= 0x05;
             qemu_irq_raise(s->irq10);
 
@@ -2733,6 +2735,8 @@ static void chihiro_irq10_timer_cb(void *opaque)
                 cpu_physical_memory_write(meta_pa + 4, &resp_data, 4);
                 if (cmd_opcode == 0x0100)
                     cpu_physical_memory_write(meta_pa + 8, &resp_data2, 4);
+                if (cmd_opcode == 0x0103)  /* full 16-byte valid serial */
+                    cpu_physical_memory_write(meta_pa + 4, "AAEE-01A00000001", 16);
                 s->mbcom_e0_status |= 0x05;
                 qemu_irq_raise(s->irq10);
             }
@@ -2982,8 +2986,12 @@ static void chihiro_mbcom_process(void)
     case 0x0102: /* SYSTEM_TYPE — low byte must be >=2 to pass board check */
         r[4] = 0x02; r[5] = 0x80; r[6] = 0; r[7] = 0;
         break;
-    case 0x0103: /* SERIAL — MAME: "-abc-abc12345678" */
-        memcpy(r + 4, "-abc-abc12345678", 16);
+    case 0x0103: /* SERIAL — must match SEGABOOT's CheckMediaBoardSerial
+                  * format mask "%%%@-##@########" (3 letters, alnum, '-',
+                  * 2 digits, alnum, 8 alnum). MAME's "-abc-abc12345678"
+                  * starts with '-' and fails the check (error 4 "bad
+                  * serial number on media board", e.g. Ollie King). */
+        memcpy(r + 4, "AAEE-01A00000001", 16);
         break;
     case 0x0104: /* Cxbx: unknown, returns 0 */
         r[4] = 0; r[5] = 0; r[6] = 0; r[7] = 0;

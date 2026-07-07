@@ -535,18 +535,31 @@ static void xemu_input_update_jvs_player(ChihiroJVSState *jvs, int player,
         jvs->analog[player * 2 + 1] = (uint16_t)(gy * 0xFFFF);
     }
 
+    /*
+     * Standard JVS switch layout (per Cxbx-Reloaded JvsIo):
+     *   byte0: start=0x80 service=0x40 up/down/left/right=0x20..0x04
+     *          push1=0x02 push2=0x01
+     *   byte1: push3=0x80 push4=0x40 push5=0x20 push6=0x10 ...
+     * HOTD3: push1=trigger, push2=reload, push3=SCREEN-IN sensor.
+     */
     uint8_t sw0 = 0;
-    if (trigger) sw0 |= 0x02;
-    if (reload)  sw0 |= 0x01;
-    if (push2)   sw0 |= 0x04;  /* push button 2 (e.g. VC3 ES/weapon) */
-    if (push3)   sw0 |= 0x08;  /* push button 3 */
+    if (trigger) sw0 |= 0x02;  /* push 1 */
+    if (reload)  sw0 |= 0x01;  /* push 2 */
     if (start)   sw0 |= 0x80;
     if (service) sw0 |= 0x40;
     jvs->player_switches[player][0] = sw0;
 
     uint8_t sw1 = 0;
     if (!offscreen && !reload) {
-        sw1 |= 0x80;  /* SCREEN-IN = IN (byte1 bit7): gun sensor detects screen */
+        sw1 |= 0x80;  /* push 3: SCREEN-IN gun sensor (HOTD3) */
+    }
+    if (push2) sw1 |= 0x40;  /* push 4 (e.g. VC3 ES pedal candidate) */
+    if (push3) sw1 |= 0x20;  /* push 5 */
+    if (player == 0) {
+        /* Test keys to identify per-game extra buttons: T=push5 Y=push6 */
+        const bool *k = SDL_GetKeyboardState(NULL);
+        if (k[SDL_SCANCODE_T]) sw1 |= 0x20;  /* push 5 */
+        if (k[SDL_SCANCODE_Y]) sw1 |= 0x10;  /* push 6 */
     }
     jvs->player_switches[player][1] = sw1;
 }
@@ -630,6 +643,30 @@ static void xemu_input_update_jvs_lightgun(void)
     }
 
     jvs->system_switches = kbd[SDL_SCANCODE_F2] ? 0x80 : 0x00;
+
+    /*
+     * Test/debug hook: OR extra JVS state from a file, so switch
+     * mappings can be exercised without a real input device.
+     * XEMU_JVS_TEST_INPUT=<path>; file holds "sw0 sw1 test" hex bytes.
+     */
+    static const char *jvs_override = (const char *)-1;
+    if (jvs_override == (const char *)-1) {
+        jvs_override = getenv("XEMU_JVS_TEST_INPUT");
+    }
+    if (jvs_override) {
+        FILE *f = fopen(jvs_override, "r");
+        if (f) {
+            unsigned s0 = 0, s1 = 0, t = 0;
+            if (fscanf(f, "%x %x %x", &s0, &s1, &t) >= 1) {
+                jvs->player_switches[0][0] |= (uint8_t)s0;
+                jvs->player_switches[0][1] |= (uint8_t)s1;
+                if (t) {
+                    jvs->system_switches |= 0x80;
+                }
+            }
+            fclose(f);
+        }
+    }
 }
 
 void xemu_input_update_controllers(void)

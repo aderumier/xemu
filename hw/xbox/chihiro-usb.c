@@ -879,35 +879,69 @@ static uint8_t chihiro_region_from_bootid(void)
  * read from boot.id (offset 0x30). Falls back to the baked-in default
  * dump when no backup exists yet.
  */
-static bool chihiro_backup_path(char *out, size_t out_len)
+/* Read the game ID from the game's boot.id (offset 0x30, alnum only);
+ * writes "default" if unavailable. */
+static void chihiro_backup_game_id(char *game_id, size_t len)
 {
     extern char chihiro_game_dir[1024];
-    char game_id[16] = "default";
+    snprintf(game_id, len, "default");
 
-    if (chihiro_game_dir[0]) {
-        char bootid[1100];
-        snprintf(bootid, sizeof(bootid), "%s/boot.id", chihiro_game_dir);
-        FILE *f = fopen(bootid, "rb");
-        if (f) {
-            uint8_t bid[0x40];
-            if (fread(bid, 1, sizeof(bid), f) == sizeof(bid) &&
-                memcmp(bid, "BTID", 4) == 0) {
-                /* gameId: up to 8 chars at 0x30, keep alnum only */
-                int n = 0;
-                for (int i = 0; i < 8 && n < (int)sizeof(game_id) - 1; i++) {
-                    uint8_t c = bid[0x30 + i];
-                    if (g_ascii_isalnum(c)) {
-                        game_id[n++] = c;
-                    }
-                }
-                game_id[n] = '\0';
-                if (n == 0) {
-                    snprintf(game_id, sizeof(game_id), "default");
-                }
+    if (!chihiro_game_dir[0]) {
+        return;
+    }
+    char bootid[1100];
+    snprintf(bootid, sizeof(bootid), "%s/boot.id", chihiro_game_dir);
+    FILE *f = fopen(bootid, "rb");
+    if (!f) {
+        return;
+    }
+    uint8_t bid[0x40];
+    if (fread(bid, 1, sizeof(bid), f) == sizeof(bid) &&
+        memcmp(bid, "BTID", 4) == 0) {
+        int n = 0;
+        for (int i = 0; i < 8 && n < (int)len - 1; i++) {
+            uint8_t c = bid[0x30 + i];
+            if (g_ascii_isalnum(c)) {
+                game_id[n++] = c;
             }
-            fclose(f);
+        }
+        if (n > 0) {
+            game_id[n] = '\0';
         }
     }
+    fclose(f);
+}
+
+/*
+ * Whether to persist this game's backup memory. Off by default because
+ * some games (e.g. Crazy Taxi) hang when restoring a saved backup;
+ * enabled either explicitly via sys.chihiro_backup, or automatically for
+ * the titles known to restore cleanly.
+ */
+static bool chihiro_backup_enabled(void)
+{
+    if (g_config.sys.chihiro_backup) {
+        return true;
+    }
+    static const char *const known_good[] = {
+        "SBFN",  /* House of the Dead 3 */
+        "SBFZ",  /* Virtua Cop 3 */
+        "SBHU",  /* Ghost Squad */
+    };
+    char game_id[16];
+    chihiro_backup_game_id(game_id, sizeof(game_id));
+    for (size_t i = 0; i < ARRAY_SIZE(known_good); i++) {
+        if (strcmp(game_id, known_good[i]) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool chihiro_backup_path(char *out, size_t out_len)
+{
+    char game_id[16];
+    chihiro_backup_game_id(game_id, sizeof(game_id));
 
     /* Save alongside the EEPROM file (a proper saves directory, e.g.
      * /userdata/saves/chihiro on Batocera); fall back to xemu's data
@@ -939,7 +973,7 @@ static bool chihiro_backup_path(char *out, size_t out_len)
 
 static void chihiro_backup_load(uint8_t *ic11, size_t len)
 {
-    if (!g_config.sys.chihiro_backup) {
+    if (!chihiro_backup_enabled()) {
         return;
     }
     char path[1024];
@@ -958,7 +992,7 @@ static void chihiro_backup_load(uint8_t *ic11, size_t len)
 
 static void chihiro_backup_save(const uint8_t *ic11, size_t len)
 {
-    if (!g_config.sys.chihiro_backup) {
+    if (!chihiro_backup_enabled()) {
         return;
     }
     char path[1024];

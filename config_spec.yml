@@ -356,13 +356,14 @@ sys:
     type: enum
     values: [scart, hdtv, vga, rfu, svideo, composite, none]
     default: hdtv
-  # Persist Chihiro baseboard backup memory (test-menu settings) per game.
-  # Disable for games that hang when a saved backup exists (e.g. titles
-  # that also store bookkeeping in the mediaboard's DIMM backup, which is
-  # not persisted, leaving the two stores inconsistent).
+  # Force-persist Chihiro baseboard backup memory (test-menu settings)
+  # for every game. Off by default because some titles (e.g. Crazy Taxi)
+  # hang when a saved backup is restored; persistence is still enabled
+  # automatically for the games known to restore cleanly (HOTD3, Virtua
+  # Cop 3, Ghost Squad). Set true to opt every game in.
   chihiro_backup:
     type: bool
-    default: true
+    default: false
   files:
     bootrom_path: string
     flashrom_path: string

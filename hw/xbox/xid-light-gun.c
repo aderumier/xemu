@@ -82,6 +82,11 @@ typedef struct USBXIDLightGunState {
     XIDLightGunCalibrationReport out_state;
     XIDLightGunCalibrationReport out_state_capabilities;
     uint8_t device_index;
+    // Calibration offsets set by the game via XInputSetLightgunCalibration
+    // (HID SET_REPORT). Applied to the reported aim the way Cxbx-Reloaded
+    // does; center offset near the middle, upper-left offset past half range.
+    int16_t cal_center_x, cal_center_y;
+    int16_t cal_upp_x, cal_upp_y;
 } USBXIDLightGunState;
 
 static const USBDescIface desc_iface_xbox_light_gun = {
@@ -196,30 +201,29 @@ static void update_lg_input(USBXIDLightGunState *s)
     s->in_state.bAnalogButtons[6] = state->lg.ltrig;
     s->in_state.bAnalogButtons[7] = state->lg.rtrig;
 
-    s->in_state.sThumbLX = state->lg.axis[0];
-    s->in_state.sThumbLY = state->lg.axis[1];
+    // Apply the game-supplied calibration the same way Cxbx-Reloaded does:
+    // positions past half range use the upper-left offsets, otherwise the
+    // center offsets. With the default zero offsets this is a no-op.
+    int16_t x = state->lg.axis[0];
+    int16_t y = state->lg.axis[1];
+    s->in_state.sThumbLX = x + ((abs(x) > 16383) ? s->cal_upp_x : s->cal_center_x);
+    s->in_state.sThumbLY = y + ((abs(y) > 16383) ? s->cal_upp_y : s->cal_center_y);
     s->in_state.sThumbRX = 0;
     s->in_state.sThumbRY = 0;
 }
 
-static void update_lg_output(USBXIDLightGunState *s)
+// Store the calibration offsets sent by XInputSetLightgunCalibration.
+// Games send this on varying report values / pipes, so callers match by
+// the report's length rather than a fixed value.
+static void usb_xid_light_gun_set_calibration(
+    USBXIDLightGunState *s, const XIDLightGunCalibrationReport *report)
 {
-    if (s->out_state.bLength == 6) {
-        // Rumble Data, do nothing (for now)
-    } else if (s->out_state.bLength == 10) {
-        // Calibration report received from game.
-        // Accept it (prevents HOTD3 hanging on calibration screen)
-        // but do NOT apply corrections to our coordinate output.
-        // Emulated gun already provides pixel-perfect coordinates;
-        // applying CRT/photodiode calibration would distort them.
-        // Same approach as benryves' Wii Remote Xbox adapter.
-        DPRINTF("xid Light Gun Calibration received (ignored): "
-                "center=(%d,%d) topleft=(%d,%d)\n",
-                s->out_state.sCenterCalibrationX,
-                s->out_state.sCenterCalibrationY,
-                s->out_state.sTopLeftCalibrationX,
-                s->out_state.sTopLeftCalibrationY);
-    }
+    s->cal_center_x = le16_to_cpu(report->sCenterCalibrationX);
+    s->cal_center_y = le16_to_cpu(report->sCenterCalibrationY);
+    s->cal_upp_x = le16_to_cpu(report->sTopLeftCalibrationX);
+    s->cal_upp_y = le16_to_cpu(report->sTopLeftCalibrationY);
+    DPRINTF("xid light gun calibration: center %d,%d upper-left %d,%d\n",
+            s->cal_center_x, s->cal_center_y, s->cal_upp_x, s->cal_upp_y);
 }
 
 static void usb_xid_light_gun_handle_control(USBDevice *dev, USBPacket *p,
@@ -251,59 +255,36 @@ static void usb_xid_light_gun_handle_control(USBDevice *dev, USBPacket *p,
             }
         } else {
             p->status = USB_RET_STALL;
-            assert(false);
         }
         break;
     case ClassInterfaceOutRequest | HID_SET_REPORT:
         DPRINTF("xid SET_REPORT 0x%x\n", value);
-        if (value == 0x0200) { /* output */
-            /* Read length, then the entire packet */
-            if (length == sizeof(XIDGamepadOutputReport)) {
-                memcpy(&s->out_state, data, sizeof(XIDGamepadOutputReport));
-
-                /* FIXME: This should also be a STALL */
-                assert(s->out_state.bLength == sizeof(XIDGamepadOutputReport));
-
-                p->actual_length = length;
-            } else {
-                p->status = USB_RET_STALL;
-            }
-            update_lg_output(s);
-        } else if (value == 0x0201) { /* light gun calibration */
-            if (length == sizeof(XIDLightGunCalibrationReport)) {
-                memcpy(&s->out_state, data,
-                       sizeof(XIDLightGunCalibrationReport));
-
-                DPRINTF("xid Light Gun Calibration Data: %d, %d, %d, %d\n",
-                        s->out_state.sCenterCalibrationX,
-                        s->out_state.sCenterCalibrationY,
-                        s->out_state.sTopLeftCalibrationX,
-                        s->out_state.sTopLeftCalibrationY);
-
-                /* FIXME: This should also be a STALL */
-                assert(s->out_state.bLength ==
-                       sizeof(XIDLightGunCalibrationReport));
-
-                p->actual_length = length;
-            } else {
-                p->status = USB_RET_STALL;
-            }
-            update_lg_output(s);
+        // Match XInputSetLightgunCalibration by length, not by report value:
+        // games send it on different values, and requiring one specific
+        // value made the call stall, leaving lightgun features that depend
+        // on a successful calibration handshake (e.g. Silent Scope's scope
+        // zoom) disabled even though basic aim/fire worked.
+        if (length == sizeof(XIDLightGunCalibrationReport)) {
+            XIDLightGunCalibrationReport report;
+            memcpy(&report, data, sizeof(report));
+            usb_xid_light_gun_set_calibration(s, &report);
+            p->actual_length = length;
+        } else if (value == 0x0200 &&
+                   length == sizeof(XIDGamepadOutputReport)) {
+            // Rumble; a real light gun has none, accept and ignore.
+            p->actual_length = length;
         } else {
             p->status = USB_RET_STALL;
-            assert(false);
         }
         break;
     /* XID requests */
     case VendorInterfaceRequest | USB_REQ_GET_DESCRIPTOR:
         DPRINTF("xid GET_DESCRIPTOR 0x%x\n", value);
-        if (value == 0x4200) {
-            assert(s->xid_desc->bLength <= length);
+        if (value == 0x4200 && s->xid_desc->bLength <= length) {
             memcpy(data, s->xid_desc, s->xid_desc->bLength);
             p->actual_length = s->xid_desc->bLength;
         } else {
             p->status = USB_RET_STALL;
-            assert(false);
         }
         break;
     case VendorInterfaceRequest | XID_GET_CAPABILITIES:
@@ -322,7 +303,6 @@ static void usb_xid_light_gun_handle_control(USBDevice *dev, USBPacket *p,
             p->actual_length = length;
         } else {
             p->status = USB_RET_STALL;
-            assert(false);
         }
         break;
     case ((USB_DIR_IN | USB_TYPE_CLASS | USB_RECIP_DEVICE) << 8) |
@@ -346,7 +326,6 @@ static void usb_xid_light_gun_handle_control(USBDevice *dev, USBPacket *p,
     default:
         DPRINTF("xid USB stalled on request 0x%x value 0x%x\n", request, value);
         p->status = USB_RET_STALL;
-        assert(false);
         break;
     }
 }
@@ -364,20 +343,24 @@ static void usb_xid_light_gun_handle_data(USBDevice *dev, USBPacket *p)
             update_lg_input(s);
             usb_packet_copy(p, &s->in_state, s->in_state.bLength);
         } else {
-            assert(false);
+            p->status = USB_RET_STALL;
         }
         break;
     case USB_TOKEN_OUT:
         if (p->ep->nr == LIGHT_GUN_OUT_ENDPOINT_ID) {
-            usb_packet_copy(p, &s->out_state, s->out_state.bLength);
-            update_lg_output(s);
+            // Calibration may also arrive over the interrupt OUT pipe;
+            // match it by size. Anything else (rumble) is accepted+ignored.
+            if (p->iov.size == sizeof(XIDLightGunCalibrationReport)) {
+                XIDLightGunCalibrationReport report;
+                usb_packet_copy(p, &report, sizeof(report));
+                usb_xid_light_gun_set_calibration(s, &report);
+            }
         } else {
-            assert(false);
+            p->status = USB_RET_STALL;
         }
         break;
     default:
         p->status = USB_RET_STALL;
-        assert(false);
         break;
     }
 }

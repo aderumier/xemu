@@ -299,12 +299,16 @@ static void xemu_input_update_evdev_gun_state(ControllerState *state)
     if (xemu_input_evdev_gun_get_pos(idx, &gx, &gy)) {
         // Normalized [0,1] top-left origin -> signed stick range. The XID
         // light gun reports aim through the left thumbstick.
-        int x = (int)((gx - 0.5f) * 65535.0f);
-        int y = (int)((0.5f - gy) * 65535.0f);
-        state->axis[CONTROLLER_AXIS_LSTICK_X] =
-            (int16_t)MIN(MAX(x, -32768), 32767);
-        state->axis[CONTROLLER_AXIS_LSTICK_Y] =
-            (int16_t)MIN(MAX(y, -32768), 32767);
+        // input.lightgun_sensitivity scales the aim range around screen
+        // center (1.0 = 1:1; >1 amplifies gun movement).
+        float sens = g_config.input.lightgun_sensitivity;
+        if (sens <= 0.0f) {
+            sens = 1.0f;
+        }
+        float nx = MIN(MAX((gx - 0.5f) * 2.0f * sens, -1.0f), 1.0f);
+        float ny = MIN(MAX((0.5f - gy) * 2.0f * sens, -1.0f), 1.0f);
+        state->axis[CONTROLLER_AXIS_LSTICK_X] = (int16_t)(nx * 32767.0f);
+        state->axis[CONTROLLER_AXIS_LSTICK_Y] = (int16_t)(ny * 32767.0f);
         state->buttons |= CONTROLLER_BUTTON_LIGHTGUN_ONSCREEN;
     }
 

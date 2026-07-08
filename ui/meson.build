@@ -49,6 +49,9 @@ endif
 
 if host_os == 'linux'
   xemu_ss.add([gtk, files('xemu-os-utils-linux.c')])
+  if libudev.found()
+    xemu_ss.add([libudev, files('xemu-input-evdev-gun.c')])
+  endif
 elif host_os == 'windows'
   xemu_ss.add(files('xemu-os-utils-windows.c'))
 elif host_os == 'darwin'

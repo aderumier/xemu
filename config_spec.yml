@@ -91,6 +91,63 @@ input:
     ltrig: string
     rtrig: string
     guide: string
+  # Linux evdev light gun input (reads /dev/input directly via libudev).
+  lightgun:
+    # Explicit evdev device assignment. Accepts /dev/input/eventN,
+    # /sys/class/input/eventN, a bare "eventN", or a /dev/input/by-id/...
+    # symlink. A comma-separated list merges several event nodes into one
+    # gun. When any gun device is set, udev auto-detection is skipped.
+    gun1_device: string
+    gun2_device: string
+    gun3_device: string
+    gun4_device: string
+    # Aim speed multiplier for guns running in relative mode (deltas
+    # integrated into a virtual position). No effect on absolute guns.
+    rel_sensitivity:
+      type: number
+      default: 1.0
+    # Bind evdev button codes to Xbox light gun buttons. Comma-separated
+    # lists of evdev names (BTN_LEFT, BTN_TRIGGER, BTN_1, KEY_..., or a
+    # raw code like 0x121/289). Empty = unbound.
+    gun_buttons:
+      a:
+        type: string
+        default: 'BTN_LEFT,BTN_TRIGGER'
+      b:
+        type: string
+        default: 'BTN_RIGHT,BTN_THUMB'
+      x:
+        type: string
+        default: 'BTN_2,BTN_EXTRA,BTN_TOP2'
+      y:
+        type: string
+        default: 'BTN_3,BTN_FORWARD,BTN_PINKIE'
+      start:
+        type: string
+        default: 'BTN_MIDDLE,BTN_THUMB2'
+      back:
+        type: string
+        default: 'BTN_1,BTN_SIDE,BTN_TOP'
+      white:
+        type: string
+        default: 'BTN_4,BTN_BACK,BTN_BASE'
+      black:
+        type: string
+        default: 'BTN_TASK,BTN_BASE2'
+      dpad_up:
+        type: string
+        default: 'BTN_5'
+      dpad_down:
+        type: string
+        default: 'BTN_6'
+      dpad_left:
+        type: string
+        default: 'BTN_7'
+      dpad_right:
+        type: string
+        default: 'BTN_8'
+      ltrigger: string
+      rtrigger: string
   # Deprecated: use 'enable_rumble' on the controller mapping settings instead
   allow_vibration:
     type: bool

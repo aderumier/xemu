@@ -77,6 +77,7 @@ enum controller_input_device_type {
     INPUT_DEVICE_SDL_KEYBOARD,
     INPUT_DEVICE_SDL_GAMEPAD,
     INPUT_DEVICE_RAWINPUT_MOUSE, // HID mouse/lightgun (Windows Raw Input)
+    INPUT_DEVICE_EVDEV_GUN,      // Linux evdev light gun (/dev/input)
 };
 
 enum peripheral_type { PERIPHERAL_NONE, PERIPHERAL_XMU, PERIPHERAL_TYPE_COUNT };
@@ -124,6 +125,10 @@ typedef struct ControllerState {
     float     rawinput_smooth_dy;
     uint64_t  rawinput_smooth_ts;   // Timestamp (ns) of last filter step
     bool      rawinput_smooth_valid;
+
+    // if type == INPUT_DEVICE_EVDEV_GUN
+    int       evdev_gun_index;      // Index into the evdev gun list
+    char      evdev_gun_guid[40];   // Stable settings key ("evdevgun:<node>")
 
     enum peripheral_type peripheral_types[2];
     void *peripherals[2];

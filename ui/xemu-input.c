@@ -31,6 +31,7 @@
 #include "xemu-input.h"
 #include "xemu-notifications.h"
 #include "xemu-rawinput.h"
+#include "xemu-input-evdev-gun.h"
 #include "xemu-settings.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -285,6 +286,79 @@ static const char *get_bound_driver(int port)
 
 static const int port_map[4] = { 3, 4, 1, 2 };
 
+// Fill a light-gun ControllerState (flat buttons/axis) from its evdev
+// device: aim -> left stick + ONSCREEN, buttons -> controller buttons.
+static void xemu_input_update_evdev_gun_state(ControllerState *state)
+{
+    state->buttons = 0;
+    memset(state->axis, 0, sizeof(state->axis));
+
+    int idx = state->evdev_gun_index;
+
+    float gx, gy;
+    if (xemu_input_evdev_gun_get_pos(idx, &gx, &gy)) {
+        // Normalized [0,1] top-left origin -> signed stick range. The XID
+        // light gun reports aim through the left thumbstick.
+        int x = (int)((gx - 0.5f) * 65535.0f);
+        int y = (int)((0.5f - gy) * 65535.0f);
+        state->axis[CONTROLLER_AXIS_LSTICK_X] =
+            (int16_t)MIN(MAX(x, -32768), 32767);
+        state->axis[CONTROLLER_AXIS_LSTICK_Y] =
+            (int16_t)MIN(MAX(y, -32768), 32767);
+        state->buttons |= CONTROLLER_BUTTON_LIGHTGUN_ONSCREEN;
+    }
+
+    uint32_t gb = xemu_input_evdev_gun_get_buttons(idx);
+    if (gb & EVDEV_GUN_BTN_A)          state->buttons |= CONTROLLER_BUTTON_A;
+    if (gb & EVDEV_GUN_BTN_B)          state->buttons |= CONTROLLER_BUTTON_B;
+    if (gb & EVDEV_GUN_BTN_X)          state->buttons |= CONTROLLER_BUTTON_X;
+    if (gb & EVDEV_GUN_BTN_Y)          state->buttons |= CONTROLLER_BUTTON_Y;
+    if (gb & EVDEV_GUN_BTN_START)      state->buttons |= CONTROLLER_BUTTON_START;
+    if (gb & EVDEV_GUN_BTN_BACK)       state->buttons |= CONTROLLER_BUTTON_BACK;
+    if (gb & EVDEV_GUN_BTN_WHITE)      state->buttons |= CONTROLLER_BUTTON_WHITE;
+    if (gb & EVDEV_GUN_BTN_BLACK)      state->buttons |= CONTROLLER_BUTTON_BLACK;
+    if (gb & EVDEV_GUN_BTN_DPAD_UP)    state->buttons |= CONTROLLER_BUTTON_DPAD_UP;
+    if (gb & EVDEV_GUN_BTN_DPAD_DOWN)  state->buttons |= CONTROLLER_BUTTON_DPAD_DOWN;
+    if (gb & EVDEV_GUN_BTN_DPAD_LEFT)  state->buttons |= CONTROLLER_BUTTON_DPAD_LEFT;
+    if (gb & EVDEV_GUN_BTN_DPAD_RIGHT) state->buttons |= CONTROLLER_BUTTON_DPAD_RIGHT;
+    if (gb & EVDEV_GUN_BTN_LTRIGGER)   state->axis[CONTROLLER_AXIS_LTRIG] = 32767;
+    if (gb & EVDEV_GUN_BTN_RTRIGGER)   state->axis[CONTROLLER_AXIS_RTRIG] = 32767;
+}
+
+// Enumerate Linux evdev light guns and expose each as a bindable
+// ControllerState, mirroring how rawinput exposes mice on Windows.
+static void xemu_input_evdev_gun_create_devices(void)
+{
+    int count = xemu_input_evdev_gun_count();
+    for (int i = 0; i < count; i++) {
+        ControllerState *con = malloc(sizeof(ControllerState));
+        memset(con, 0, sizeof(ControllerState));
+        con->type = INPUT_DEVICE_EVDEV_GUN;
+        con->evdev_gun_index = i;
+        con->bound = -1;
+        con->peripheral_types[0] = PERIPHERAL_NONE;
+        con->peripheral_types[1] = PERIPHERAL_NONE;
+
+        const char *node = xemu_input_evdev_gun_get_devnode(i);
+        snprintf(con->evdev_gun_guid, sizeof(con->evdev_gun_guid),
+                 "evdevgun:%s", node);
+        char name[64];
+        snprintf(name, sizeof(name), "Light Gun %d", i + 1);
+        con->name = strdup(name);
+
+        int port = xemu_input_get_controller_default_bind_port(con, 0);
+        if (port >= 0) {
+            xemu_input_bind(port, con, 0);
+            char buf[128];
+            snprintf(buf, sizeof(buf), "Connected '%s' to port %d",
+                     con->name, port + 1);
+            xemu_queue_notification(buf);
+        }
+
+        QTAILQ_INSERT_TAIL(&available_controllers, con, entry);
+    }
+}
+
 void xemu_input_init(void)
 {
     if (g_config.input.background_input_capture) {
@@ -334,19 +408,21 @@ void xemu_input_init(void)
 
     QTAILQ_INSERT_TAIL(&available_controllers, new_con, entry);
 
-    // Enumerate HID mice/lightguns (Windows only)
-    xemu_rawinput_init(xemu_get_window());
+    // Enumerate Linux evdev light guns as bindable devices
+    xemu_input_evdev_gun_create_devices();
 }
 
 int xemu_input_get_controller_default_bind_port(ControllerState *state, int start)
 {
-    char guid[35] = { 0 };
+    char guid[64] = { 0 };
     if (state->type == INPUT_DEVICE_SDL_GAMEPAD) {
         SDL_GUIDToString(state->sdl_joystick_guid, guid, sizeof(guid));
     } else if (state->type == INPUT_DEVICE_SDL_KEYBOARD) {
         snprintf(guid, sizeof(guid), "keyboard");
     } else if (state->type == INPUT_DEVICE_RAWINPUT_MOUSE) {
         snprintf(guid, sizeof(guid), "%s", state->rawinput_guid);
+    } else if (state->type == INPUT_DEVICE_EVDEV_GUN) {
+        snprintf(guid, sizeof(guid), "%s", state->evdev_gun_guid);
     }
 
     for (int i = start; i < 4; i++) {
@@ -523,6 +599,8 @@ void xemu_input_update_controller(ControllerState *state)
         xemu_input_update_sdl_controller_state(state);
     } else if (state->type == INPUT_DEVICE_RAWINPUT_MOUSE) {
         xemu_rawinput_update_controller_state(state);
+    } else if (state->type == INPUT_DEVICE_EVDEV_GUN) {
+        xemu_input_update_evdev_gun_state(state);
     }
 
     state->last_input_updated_ts = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
@@ -531,6 +609,7 @@ void xemu_input_update_controller(ControllerState *state)
 void xemu_input_update_controllers(void)
 {
     xemu_rawinput_process_pending();
+    xemu_input_evdev_gun_poll();
 
     ControllerState *iter;
     QTAILQ_FOREACH(iter, &available_controllers, entry) {
@@ -720,7 +799,7 @@ void xemu_input_bind(int index, ControllerState *state, int save)
 
     // Save this controller's GUID in settings for auto re-connect
     if (save) {
-        char guid_buf[35] = { 0 };
+        char guid_buf[64] = { 0 };
         if (state) {
             if (state->type == INPUT_DEVICE_SDL_GAMEPAD) {
                 SDL_GUIDToString(state->sdl_joystick_guid, guid_buf, sizeof(guid_buf));
@@ -729,6 +808,9 @@ void xemu_input_bind(int index, ControllerState *state, int save)
             } else if (state->type == INPUT_DEVICE_RAWINPUT_MOUSE) {
                 snprintf(guid_buf, sizeof(guid_buf), "%s",
                          state->rawinput_guid);
+            } else if (state->type == INPUT_DEVICE_EVDEV_GUN) {
+                snprintf(guid_buf, sizeof(guid_buf), "%s",
+                         state->evdev_gun_guid);
             }
         }
         xemu_settings_set_string(port_index_to_settings_key_map[index], guid_buf);

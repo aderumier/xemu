@@ -201,15 +201,34 @@ static void update_lg_input(USBXIDLightGunState *s)
     s->in_state.bAnalogButtons[6] = state->lg.ltrig;
     s->in_state.bAnalogButtons[7] = state->lg.rtrig;
 
-    // Apply the game-supplied calibration the same way Cxbx-Reloaded does:
-    // positions past half range use the upper-left offsets, otherwise the
-    // center offsets. With the default zero offsets this is a no-op.
-    int16_t x = state->lg.axis[0];
-    int16_t y = state->lg.axis[1];
-    s->in_state.sThumbLX = x + ((abs(x) > 16383) ? s->cal_upp_x : s->cal_center_x);
-    s->in_state.sThumbLY = y + ((abs(y) > 16383) ? s->cal_upp_y : s->cal_center_y);
+    // Aim is already pixel-perfect; do NOT apply the game's calibration
+    // offsets (they destabilise the aim). We still accept the calibration
+    // handshake, we just don't distort coordinates with it.
+    s->in_state.sThumbLX = state->lg.axis[0];
+    s->in_state.sThumbLY = state->lg.axis[1];
     s->in_state.sThumbRX = 0;
     s->in_state.sThumbRY = 0;
+
+    // TEMP diagnostic (grep 'xid-lg-dbg'): log the report only when the
+    // digital state changes, so button presses and the onscreen bit
+    // (0x2000) are visible without per-frame spam.
+    static uint16_t last_wButtons = 0xABCD;
+    static uint8_t last_analog[8];
+    if (s->in_state.wButtons != last_wButtons ||
+        memcmp(s->in_state.bAnalogButtons, last_analog, 8) != 0) {
+        last_wButtons = s->in_state.wButtons;
+        memcpy(last_analog, s->in_state.bAnalogButtons, 8);
+        fprintf(stderr,
+                "xid-lg-dbg: wButtons=0x%04x onscreen=%d "
+                "A=%d B=%d X=%d Y=%d Blk=%d Wht=%d LT=%d RT=%d aim=%d,%d\n",
+                s->in_state.wButtons,
+                (s->in_state.wButtons & 0x2000) ? 1 : 0,
+                s->in_state.bAnalogButtons[0], s->in_state.bAnalogButtons[1],
+                s->in_state.bAnalogButtons[2], s->in_state.bAnalogButtons[3],
+                s->in_state.bAnalogButtons[4], s->in_state.bAnalogButtons[5],
+                s->in_state.bAnalogButtons[6], s->in_state.bAnalogButtons[7],
+                s->in_state.sThumbLX, s->in_state.sThumbLY);
+    }
 }
 
 // Store the calibration offsets sent by XInputSetLightgunCalibration.
@@ -222,7 +241,7 @@ static void usb_xid_light_gun_set_calibration(
     s->cal_center_y = le16_to_cpu(report->sCenterCalibrationY);
     s->cal_upp_x = le16_to_cpu(report->sTopLeftCalibrationX);
     s->cal_upp_y = le16_to_cpu(report->sTopLeftCalibrationY);
-    DPRINTF("xid light gun calibration: center %d,%d upper-left %d,%d\n",
+    fprintf(stderr, "xid-lg-dbg: calibration center=%d,%d upper-left=%d,%d\n",
             s->cal_center_x, s->cal_center_y, s->cal_upp_x, s->cal_upp_y);
 }
 
@@ -240,6 +259,11 @@ static void usb_xid_light_gun_handle_control(USBDevice *dev, USBPacket *p,
         DPRINTF("xid handled by usb_desc_handle_control: %d\n", ret);
         return;
     }
+
+    // TEMP diagnostic (grep 'xid-lg-dbg'): log the XID-specific control
+    // requests a game issues, to see what e.g. Silent Scope asks for.
+    fprintf(stderr, "xid-lg-dbg: control request=0x%x value=0x%x index=0x%x "
+                    "length=%d\n", request, value, index, length);
 
     switch (request) {
     /* HID requests */

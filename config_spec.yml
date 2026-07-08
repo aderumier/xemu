@@ -74,8 +74,10 @@ input:
     # are logged on stderr with the name to bind. Empty = unbound.
     # Defaults follow the Batocera gun convention (trigger=BTN_LEFT,
     # action=BTN_RIGHT, start=BTN_MIDDLE, select=BTN_1, SUB1..3=
-    # BTN_2..4, up/down/left/right=BTN_5..8), with joystick-code
-    # aliases for guns exposing a joystick interface.
+    # BTN_2..4), with joystick-code aliases for guns exposing a
+    # joystick interface. Note: the gun deliberately has no D-pad
+    # binding - lightgun games detect a controller (and drop out of
+    # lightgun/scope mode) when D-pad input arrives.
     gun_buttons:
       a:
         type: string
@@ -101,18 +103,6 @@ input:
       black:
         type: string
         default: 'BTN_TASK,BTN_BASE2'
-      dpad_up:
-        type: string
-        default: 'BTN_5'
-      dpad_down:
-        type: string
-        default: 'BTN_6'
-      dpad_left:
-        type: string
-        default: 'BTN_7'
-      dpad_right:
-        type: string
-        default: 'BTN_8'
       # Analog trigger slots of the light gun report (full pull when
       # pressed). Some games read actions like scope zoom from these.
       ltrigger: string

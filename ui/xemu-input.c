@@ -575,14 +575,8 @@ void xemu_input_update_sdl_kbd_controller_state(ControllerState *state)
             state->lg.buttons |= CONTROLLER_BUTTON_WHITE;
         if (gunBtn & EVDEV_GUN_BTN_BLACK)
             state->lg.buttons |= CONTROLLER_BUTTON_BLACK;
-        if (gunBtn & EVDEV_GUN_BTN_DPAD_UP)
-            state->lg.buttons |= CONTROLLER_BUTTON_DPAD_UP;
-        if (gunBtn & EVDEV_GUN_BTN_DPAD_DOWN)
-            state->lg.buttons |= CONTROLLER_BUTTON_DPAD_DOWN;
-        if (gunBtn & EVDEV_GUN_BTN_DPAD_LEFT)
-            state->lg.buttons |= CONTROLLER_BUTTON_DPAD_LEFT;
-        if (gunBtn & EVDEV_GUN_BTN_DPAD_RIGHT)
-            state->lg.buttons |= CONTROLLER_BUTTON_DPAD_RIGHT;
+        // No gun D-pad: lightgun games treat D-pad input as a controller
+        // and drop out of lightgun/scope mode.
         if (gunBtn & EVDEV_GUN_BTN_LTRIGGER)
             state->lg.ltrig = 0xFF;
         if (gunBtn & EVDEV_GUN_BTN_RTRIGGER)
@@ -607,14 +601,8 @@ void xemu_input_update_sdl_kbd_controller_state(ControllerState *state)
             state->lg.buttons |= CONTROLLER_BUTTON_WHITE;
         if (kbd[g_config.input.keyboard_controller_scancode_map.black])
             state->lg.buttons |= CONTROLLER_BUTTON_BLACK;
-        if (kbd[g_config.input.keyboard_controller_scancode_map.dpad_up])
-            state->lg.buttons |= CONTROLLER_BUTTON_DPAD_UP;
-        if (kbd[g_config.input.keyboard_controller_scancode_map.dpad_down])
-            state->lg.buttons |= CONTROLLER_BUTTON_DPAD_DOWN;
-        if (kbd[g_config.input.keyboard_controller_scancode_map.dpad_left])
-            state->lg.buttons |= CONTROLLER_BUTTON_DPAD_LEFT;
-        if (kbd[g_config.input.keyboard_controller_scancode_map.dpad_right])
-            state->lg.buttons |= CONTROLLER_BUTTON_DPAD_RIGHT;
+        // No D-pad in lightgun mode: D-pad input makes games treat the
+        // device as a controller and leave lightgun/scope mode.
         if (kbd[g_config.input.keyboard_controller_scancode_map.ltrigger])
             state->lg.ltrig = 0xFF;
         if (kbd[g_config.input.keyboard_controller_scancode_map.rtrigger])

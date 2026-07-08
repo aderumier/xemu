@@ -46,10 +46,8 @@
 #define EVDEV_GUN_BTN_BACK       (1 << 5)
 #define EVDEV_GUN_BTN_WHITE      (1 << 6)
 #define EVDEV_GUN_BTN_BLACK      (1 << 7)
-#define EVDEV_GUN_BTN_DPAD_UP    (1 << 8)
-#define EVDEV_GUN_BTN_DPAD_DOWN  (1 << 9)
-#define EVDEV_GUN_BTN_DPAD_LEFT  (1 << 10)
-#define EVDEV_GUN_BTN_DPAD_RIGHT (1 << 11)
+/* No D-pad: lightgun games treat D-pad input as a controller and leave
+ * lightgun/scope mode, so the gun must never emit it. */
 #define EVDEV_GUN_BTN_LTRIGGER   (1 << 12)
 #define EVDEV_GUN_BTN_RTRIGGER   (1 << 13)
 

@@ -404,8 +404,12 @@ void xbox_init_common(MachineState *machine,
                         if (slash) *slash = '\0';
                     }
                     uint32_t fatx_size = 0;
-                    /* mbfs: partition = DIMM_sectors - 0x8000 (512MB → 0xF8000) */
-                    uint32_t mbfs_sectors = 0x100000 - 0x8000;
+                    /* mbfs partition = DIMM_sectors - 0x8000. Use a 1GB
+                     * DIMM (0x200000 sectors -> 0x1F8000): the resulting
+                     * FATX layout (boot.id at 0x21000) is what retail
+                     * mastered games expect (e.g. OutRun 2, Special Tours),
+                     * and 512MB-mastered games boot from it fine too. */
+                    uint32_t mbfs_sectors = 0x200000 - 0x8000;
                     uint8_t *fatx = chihiro_fatx_build(game_dir, &fatx_size,
                                                        mbfs_sectors);
                     if (fatx) {

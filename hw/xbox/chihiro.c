@@ -2253,7 +2253,7 @@ static void chihiro_dimm_event_timer_cb(void *opaque)
 
             uint32_t resp_data = 0, resp_data2 = 0;
             switch (cmd_opcode) {
-            case 0x0001: resp_data = 0x20000000; break;
+            case 0x0001: resp_data = 0x40000000; break;
             case 0x0100: resp_data = 5; resp_data2 = 100; break;
             case 0x0101: resp_data = 0x0317; break;
             case 0x0102: resp_data = 0x8002; break;
@@ -2296,8 +2296,8 @@ static void chihiro_dimm_process_cmd(ChihiroLPCState *s)
     s->dimm_resp[1] = cmd | 0x8000;
 
     switch (cmd) {
-    case 0x0001: /* DIMM_SIZE — 512MB */
-        s->dimm_resp[2] = 0x20000000;
+    case 0x0001: /* DIMM_SIZE — 1GB */
+        s->dimm_resp[2] = 0x40000000;
         break;
     case 0x0100: /* STATUS — phase=5 (ready), completion=100% */
         s->dimm_resp[2] = 5;
@@ -2422,12 +2422,11 @@ static uint64_t chihiro_lpc_io_read(void *opaque, hwaddr addr,
         }
         break;
     case SEGA_DIMM_SIZE:
-        /* TEMPORARY: Hardcoded 512MB DIMM size. On real hardware, the
-         * baseboard PIC detects installed DIMM capacity.
-         * TODO: Replace with PIC16 emulation for upstream LLE. */
-        r = SEGA_DIMM_SIZE_512M;        /* Kernel computes mbcom LBA from this:
-                                         * mbcom_start = (0x40000 << factor) - 0x8000.
-                                         * Must match IDE capacity and CHIHIRO_MBCOM_BASE. */
+        /* Report a 1GB DIMM. The kernel computes the mbcom LBA from this:
+         * mbcom_start = (0x40000 << factor) - 0x8000, factor 3 = 0x1F8000.
+         * Must match the FATX partition size and CHIHIRO_MBCOM_BASE.
+         * TODO: make the DIMM size configurable / PIC16-driven for LLE. */
+        r = SEGA_DIMM_SIZE_1024M;
         break;
     case 0x26:  /* Port 0x4026: scratch register (read-write) */
         r = s->lpc_scratch_4026;
@@ -2723,7 +2722,7 @@ static void chihiro_irq10_timer_cb(void *opaque)
                 cpu_physical_memory_read(data_pa + 2, &cmd_opcode, 2);
                 uint32_t resp_data = 0, resp_data2 = 0;
                 switch (cmd_opcode) {
-                case 0x0001: resp_data = 0x20000000; break;
+                case 0x0001: resp_data = 0x40000000; break;
                 case 0x0100: resp_data = 5; resp_data2 = 100; break;
                 case 0x0101: resp_data = 0x0317; break;
                 case 0x0102: resp_data = 0x8002; break;
@@ -2909,15 +2908,15 @@ type_init(chihiro_register_types)
  *   - Response sector: mbcom_base + 0x4800 (read by SEGABOOT)
  *   - Command sector:  mbcom_base + 0x4801 (written by SEGABOOT)
  *
- * For DIMM size 512MB (size_factor=2):
- *   mbcom_base = (0x40000 << 2) - 0x8000 = 0xF8000
- *   Response LBA = 0xFC800
- *   Command LBA  = 0xFC801
+ * For DIMM size 1GB (size_factor=3):
+ *   mbcom_base = (0x40000 << 3) - 0x8000 = 0x1F8000
+ *   Response LBA = 0x1FC800
+ *   Command LBA  = 0x1FC801
  */
 
-#define CHIHIRO_MBCOM_BASE      0xF8000
-#define CHIHIRO_MBCOM_RESPONSE  (CHIHIRO_MBCOM_BASE + 0x4800)  /* 0xFC800 */
-#define CHIHIRO_MBCOM_COMMAND   (CHIHIRO_MBCOM_BASE + 0x4801)  /* 0xFC801 */
+#define CHIHIRO_MBCOM_BASE      0x1F8000
+#define CHIHIRO_MBCOM_RESPONSE  (CHIHIRO_MBCOM_BASE + 0x4800)  /* 0x1FC800 */
+#define CHIHIRO_MBCOM_COMMAND   (CHIHIRO_MBCOM_BASE + 0x4801)  /* 0x1FC801 */
 #define CHIHIRO_MBROM0          0x8000000
 #define CHIHIRO_MBROM1          0x8000800
 
@@ -3003,7 +3002,7 @@ static void chihiro_mbcom_process(void)
     }
 
     switch (cmd_code) {
-    case 0x0001: /* DIMM_SIZE — 512MB = 0x20000000 (matches port 0x40F4 factor=2) */
+    case 0x0001: /* DIMM_SIZE — 1GB = 0x40000000 (matches port 0x40F4 factor=3) */
         r[4] = 0x00; r[5] = 0x00; r[6] = 0x00; r[7] = 0x20;
         break;
     case 0x0100: /* STATUS — phase=5 (READY), completion=100%

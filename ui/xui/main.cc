@@ -307,48 +307,6 @@ void xemu_hud_update(void)
         }
     }
 
-    // Startup splash for this fork: shows at every launch and closes
-    // itself automatically after a few seconds.
-    static int flowa_popup_state = 0; // 0 = pending, 1 = open, 2 = done
-    static double flowa_popup_opened_at = 0.0;
-    const double flowa_popup_duration = 8.0;
-    const char *flowa_popup_title =
-        "XEMU LightGun Edition v3.0 By Code Flow##flowa";
-    if (flowa_popup_state == 0 && !first_boot_window.is_open) {
-        ImGui::OpenPopup(flowa_popup_title);
-        flowa_popup_opened_at = ImGui::GetTime();
-        flowa_popup_state = 1;
-    }
-    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(),
-                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    if (ImGui::BeginPopupModal(flowa_popup_title, NULL,
-                               ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::SetWindowFontScale(1.8f);
-        ImGui::Text("XEMU LightGun Edition v3.0");
-        ImGui::Text("By Code Flow");
-        ImGui::Dummy(ImVec2(0, 6 * g_viewport_mgr.m_scale));
-        ImGui::Text("Lightgun support for Sinden and\n"
-                    "any HID mouse lightgun.");
-        ImGui::Dummy(ImVec2(0, 6 * g_viewport_mgr.m_scale));
-        ImGui::Text("Support the project - subscribe:");
-        Hyperlink("https://www.youtube.com/@flowachannel4731",
-                  "https://www.youtube.com/@flowachannel4731");
-        ImGui::Dummy(ImVec2(0, 8 * g_viewport_mgr.m_scale));
-        double elapsed = ImGui::GetTime() - flowa_popup_opened_at;
-        int remaining = (int)(flowa_popup_duration - elapsed) + 1;
-        if (remaining < 0) {
-            remaining = 0;
-        }
-        ImGui::Text("Closing automatically in %d second%s...",
-                    remaining, remaining == 1 ? "" : "s");
-        ImGui::SetWindowFontScale(1.0f);
-        if (elapsed >= flowa_popup_duration) {
-            flowa_popup_state = 2;
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::EndPopup();
-    }
-
     first_boot_window.Draw();
     monitor_window.Draw();
     apu_window.Draw();

@@ -221,6 +221,13 @@ typedef struct TextureBinding {
     uint64_t hash;
     unsigned int draw_time;
     uint32_t submit_time;
+    /* Monotonic creation id: tells a recreated texture apart from the one
+     * previously in this node even if the driver recycled the Vk handles. */
+    uint64_t seq;
+    /* Last frame this binding's content was (re)validated. Dynamic RAM
+     * writes near textures re-flag possibly_dirty constantly; without this
+     * throttle every draw would re-hash texture content. */
+    unsigned int validation_frame;
 } TextureBinding;
 
 typedef struct QueryReport {
@@ -366,7 +373,11 @@ typedef struct PGRAPHVkState {
 
     VkDescriptorPool descriptor_pool;
     VkDescriptorSetLayout descriptor_set_layout;
-    VkDescriptorSet descriptor_sets[1024];
+    /* Sized so that a full frame of draws fits without forcing a mid-frame
+     * pipeline drain: draw-call-heavy titles (e.g. Silent Scope Complete)
+     * issue ~4600 draws/frame, one descriptor set each; at 1024 this forced
+     * a GPU sync (FINISH_NEED_BUFFER_SPACE) ~4x per frame. */
+    VkDescriptorSet descriptor_sets[8192];
     int descriptor_set_index;
 
     StorageBuffer storage_buffers[BUFFER_COUNT];
@@ -397,6 +408,7 @@ typedef struct PGRAPHVkState {
     TextureBinding *texture_bindings[NV2A_MAX_TEXTURES];
     TextureBinding dummy_texture;
     bool texture_bindings_changed;
+    uint64_t texture_binding_seq;
     VkFormatProperties *texture_format_properties;
 
     Lru shader_cache;

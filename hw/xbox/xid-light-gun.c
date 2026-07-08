@@ -44,14 +44,24 @@ static const USBDescStrings desc_strings_light_gun = {
 #define USB_XID(obj) \
     OBJECT_CHECK(USBXIDLightGunState, (obj), TYPE_USB_XID_LIGHT_GUN)
 
+/*
+ * Full 20-byte standard XID gamepad input report, as a real EMS TopGun II
+ * sends. wButtons is 16-bit: the low byte carries the dpad/start/back
+ * digital buttons, and bit 0x2000 (high byte 0x20) is
+ * XINPUT_LIGHTGUN_ONSCREEN. Emitting the truncated 16-byte form made
+ * Silent Scope treat the device as a plain controller and never enable
+ * the scope; the trailing right-thumbstick fields are zero but must be
+ * present so bLength is 20.
+ */
 typedef struct XIDLightGunReport {
     uint8_t bReportId;
     uint8_t bLength;
-    uint8_t wButtons;
-    uint8_t wState;
+    uint16_t wButtons;
     uint8_t bAnalogButtons[8]; // The last 2 are the trigger slots
     int16_t sThumbLX;
     int16_t sThumbLY;
+    int16_t sThumbRX;
+    int16_t sThumbRY;
 } QEMU_PACKED XIDLightGunReport;
 
 typedef struct XIDLightGunCalibrationReport {
@@ -166,7 +176,10 @@ static void update_lg_input(USBXIDLightGunState *s)
     if (state->lg.buttons & CONTROLLER_BUTTON_BACK)
         s->in_state.wButtons |= 0x20;
 
-    s->in_state.wState = state->lg.status;
+    // Onscreen indicator lives in the high byte of the 16-bit wButtons
+    // (XINPUT_LIGHTGUN_ONSCREEN == 0x2000); lg.status is 0x20 onscreen,
+    // 0x00 offscreen, so shifting it into place reproduces that bit.
+    s->in_state.wButtons |= ((uint16_t)state->lg.status) << 8;
 
     s->in_state.bAnalogButtons[0] =
         (state->lg.buttons & CONTROLLER_BUTTON_A) ? 0xFF : 0x00;
@@ -185,6 +198,8 @@ static void update_lg_input(USBXIDLightGunState *s)
 
     s->in_state.sThumbLX = state->lg.axis[0];
     s->in_state.sThumbLY = state->lg.axis[1];
+    s->in_state.sThumbRX = 0;
+    s->in_state.sThumbRY = 0;
 }
 
 static void update_lg_output(USBXIDLightGunState *s)

@@ -33,6 +33,7 @@
 #include "xemu-rawinput.h"
 #include "xemu-input-evdev-gun.h"
 #include "xemu-settings.h"
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -286,6 +287,51 @@ static const char *get_bound_driver(int port)
 
 static const int port_map[4] = { 3, 4, 1, 2 };
 
+void xemu_input_filter_lightgun_aim(ControllerState *state, float *nx, float *ny)
+{
+    // Smooth the aim to tame hand/camera jitter, using a "1-euro filter":
+    // an adaptive low-pass whose cutoff rises with speed. While nearly
+    // still it filters hard; on fast moves it opens up to avoid perceived lag.
+    float smoothing = g_config.input.lightgun_smoothing;
+    if (smoothing <= 0.0f) {
+        state->aim_smooth_valid = false;
+        return;
+    }
+
+    smoothing = MIN(smoothing, 1.0f);
+    uint64_t now = SDL_GetTicksNS();
+    if (!state->aim_smooth_valid) {
+        state->aim_smooth_nx = *nx;
+        state->aim_smooth_ny = *ny;
+        state->aim_smooth_dx = 0.0f;
+        state->aim_smooth_dy = 0.0f;
+        state->aim_smooth_valid = true;
+    } else {
+        float dt = (now - state->aim_smooth_ts) / 1e9f;
+        dt = MIN(MAX(dt, 1e-4f), 0.1f);
+
+        const float two_pi = 6.28318531f;
+        float ad = 1.0f / (1.0f + 1.0f / (two_pi * 1.0f * dt));
+        float raw_dx = (*nx - state->aim_smooth_nx) / dt;
+        float raw_dy = (*ny - state->aim_smooth_ny) / dt;
+        state->aim_smooth_dx += ad * (raw_dx - state->aim_smooth_dx);
+        state->aim_smooth_dy += ad * (raw_dy - state->aim_smooth_dy);
+
+        float min_cutoff = 6.0f - 5.5f * smoothing; // 6 Hz .. 0.5 Hz
+        const float beta = 5.0f;
+        float cx = min_cutoff + beta * fabsf(state->aim_smooth_dx);
+        float cy = min_cutoff + beta * fabsf(state->aim_smooth_dy);
+        float ax = 1.0f / (1.0f + 1.0f / (two_pi * cx * dt));
+        float ay = 1.0f / (1.0f + 1.0f / (two_pi * cy * dt));
+        state->aim_smooth_nx += ax * (*nx - state->aim_smooth_nx);
+        state->aim_smooth_ny += ay * (*ny - state->aim_smooth_ny);
+    }
+
+    state->aim_smooth_ts = now;
+    *nx = state->aim_smooth_nx;
+    *ny = state->aim_smooth_ny;
+}
+
 // Fill a light-gun ControllerState (flat buttons/axis) from its evdev
 // device: aim -> left stick + ONSCREEN, buttons -> controller buttons.
 static void xemu_input_update_evdev_gun_state(ControllerState *state)
@@ -299,17 +345,23 @@ static void xemu_input_update_evdev_gun_state(ControllerState *state)
     if (xemu_input_evdev_gun_get_pos(idx, &gx, &gy)) {
         // Normalized [0,1] top-left origin -> signed stick range. The XID
         // light gun reports aim through the left thumbstick.
+        float nx = (gx - 0.5f) * 2.0f;
+        float ny = (0.5f - gy) * 2.0f;
+        xemu_input_filter_lightgun_aim(state, &nx, &ny);
+
         // input.lightgun_sensitivity scales the aim range around screen
         // center (1.0 = 1:1; >1 amplifies gun movement).
         float sens = g_config.input.lightgun_sensitivity;
         if (sens <= 0.0f) {
             sens = 1.0f;
         }
-        float nx = MIN(MAX((gx - 0.5f) * 2.0f * sens, -1.0f), 1.0f);
-        float ny = MIN(MAX((0.5f - gy) * 2.0f * sens, -1.0f), 1.0f);
+        nx = MIN(MAX(nx * sens, -1.0f), 1.0f);
+        ny = MIN(MAX(ny * sens, -1.0f), 1.0f);
         state->axis[CONTROLLER_AXIS_LSTICK_X] = (int16_t)(nx * 32767.0f);
         state->axis[CONTROLLER_AXIS_LSTICK_Y] = (int16_t)(ny * 32767.0f);
         state->buttons |= CONTROLLER_BUTTON_LIGHTGUN_ONSCREEN;
+    } else {
+        state->aim_smooth_valid = false;
     }
 
     uint32_t gb = xemu_input_evdev_gun_get_buttons(idx);

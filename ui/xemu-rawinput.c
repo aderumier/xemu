@@ -30,7 +30,6 @@
 
 #ifdef _WIN32
 
-#include <math.h>
 #include <windows.h>
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_system.h>
@@ -563,55 +562,7 @@ void xemu_rawinput_update_controller_state(ControllerState *state)
     float nx = 2.0f * (px - rx) / rw - 1.0f; // [-1,1], left -> right
     float ny = 1.0f - 2.0f * (py - ry) / rh; // [-1,1], bottom -> top
 
-    // Smooth the aim to tame hand/camera jitter, using a "1-euro filter":
-    // an adaptive low-pass whose cutoff rises with speed. While nearly
-    // still it filters hard (rock-solid crosshair); on fast moves it opens
-    // up completely, so there is no perceivable lag.
-    float smoothing = g_config.input.lightgun_smoothing;
-    if (smoothing > 0.0f) {
-        smoothing = MIN(smoothing, 1.0f);
-        uint64_t now = SDL_GetTicksNS();
-        if (!state->rawinput_smooth_valid) {
-            state->rawinput_smooth_nx = nx;
-            state->rawinput_smooth_ny = ny;
-            state->rawinput_smooth_dx = 0.0f;
-            state->rawinput_smooth_dy = 0.0f;
-            state->rawinput_smooth_valid = true;
-        } else {
-            float dt = (now - state->rawinput_smooth_ts) / 1e9f;
-            dt = MIN(MAX(dt, 1e-4f), 0.1f);
-
-            // Filtered velocity (1 Hz cutoff): jitter averages out to ~0,
-            // real hand movement produces a sustained value
-            const float two_pi = 6.28318531f;
-            float ad = 1.0f / (1.0f + 1.0f / (two_pi * 1.0f * dt));
-            float raw_dx = (nx - state->rawinput_smooth_nx) / dt;
-            float raw_dy = (ny - state->rawinput_smooth_ny) / dt;
-            state->rawinput_smooth_dx +=
-                ad * (raw_dx - state->rawinput_smooth_dx);
-            state->rawinput_smooth_dy +=
-                ad * (raw_dy - state->rawinput_smooth_dy);
-
-            // Cutoff frequency: low while still (strong smoothing, more so
-            // at higher smoothing settings), raised in proportion to speed
-            // so fast moves pass through unfiltered
-            float min_cutoff = 6.0f - 5.5f * smoothing; // 6 Hz .. 0.5 Hz
-            const float beta = 5.0f;
-            float cx = min_cutoff + beta * fabsf(state->rawinput_smooth_dx);
-            float cy = min_cutoff + beta * fabsf(state->rawinput_smooth_dy);
-            float ax = 1.0f / (1.0f + 1.0f / (two_pi * cx * dt));
-            float ay = 1.0f / (1.0f + 1.0f / (two_pi * cy * dt));
-            state->rawinput_smooth_nx +=
-                ax * (nx - state->rawinput_smooth_nx);
-            state->rawinput_smooth_ny +=
-                ay * (ny - state->rawinput_smooth_ny);
-        }
-        state->rawinput_smooth_ts = now;
-        nx = state->rawinput_smooth_nx;
-        ny = state->rawinput_smooth_ny;
-    } else {
-        state->rawinput_smooth_valid = false;
-    }
+    xemu_input_filter_lightgun_aim(state, &nx, &ny);
 
     // Sensitivity scales the aim range around the screen center
     float sensitivity = g_config.input.lightgun_sensitivity;

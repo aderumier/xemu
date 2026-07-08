@@ -119,12 +119,12 @@ typedef struct ControllerState {
     int32_t   rawinput_client_x;    // Last aim position, window client pixels
     int32_t   rawinput_client_y;
     bool      rawinput_has_abs;     // Device reports absolute positions (e.g. Sinden)
-    float     rawinput_smooth_nx;   // Filtered aim, normalized [-1, 1]
-    float     rawinput_smooth_ny;
-    float     rawinput_smooth_dx;   // Filtered aim velocity (units/s)
-    float     rawinput_smooth_dy;
-    uint64_t  rawinput_smooth_ts;   // Timestamp (ns) of last filter step
-    bool      rawinput_smooth_valid;
+    float     aim_smooth_nx;        // Filtered lightgun aim, normalized [-1, 1]
+    float     aim_smooth_ny;
+    float     aim_smooth_dx;        // Filtered aim velocity (units/s)
+    float     aim_smooth_dy;
+    uint64_t  aim_smooth_ts;        // Timestamp (ns) of last filter step
+    bool      aim_smooth_valid;
 
     // if type == INPUT_DEVICE_EVDEV_GUN
     int       evdev_gun_index;      // Index into the evdev gun list
@@ -176,6 +176,7 @@ void xemu_input_reset_input_mapping(ControllerState *state);
 // renderer. Used to map lightgun/mouse positions to aim coordinates.
 void xemu_input_set_game_display_rect(int x, int y, int w, int h);
 void xemu_input_get_game_display_rect(int *x, int *y, int *w, int *h);
+void xemu_input_filter_lightgun_aim(ControllerState *state, float *nx, float *ny);
 
 #ifdef __cplusplus
 }

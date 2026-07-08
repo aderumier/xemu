@@ -101,11 +101,6 @@ input:
     gun2_device: string
     gun3_device: string
     gun4_device: string
-    # Aim speed multiplier for guns running in relative mode (deltas
-    # integrated into a virtual position). No effect on absolute guns.
-    rel_sensitivity:
-      type: number
-      default: 1.0
     # Bind evdev button codes to Xbox light gun buttons. Comma-separated
     # lists of evdev names (BTN_LEFT, BTN_TRIGGER, BTN_1, KEY_..., or a
     # raw code like 0x121/289). Empty = unbound.

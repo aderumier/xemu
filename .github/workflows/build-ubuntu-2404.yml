@@ -1,0 +1,116 @@
+name: Build (Ubuntu 24.04)
+
+on:
+  push:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build for Ubuntu 24.04 (${{ matrix.configuration }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [release]
+        # Add 'debug' to the list above for a debug build as well
+    env:
+      CCACHE_DIR: /tmp/xemu-ccache
+      CCACHE_MAXSIZE: 512M
+    steps:
+    - name: Clone tree
+      uses: actions/checkout@v4
+    - name: Initialize compiler cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.CCACHE_DIR }}
+        key: ccache-ubuntu2404-${{ matrix.configuration }}-${{ github.sha }}
+        restore-keys: ccache-ubuntu2404-${{ matrix.configuration }}-
+    - name: Install dependencies
+      run: |
+        sudo apt-get -qy update
+        # Pull everything listed in debian/control Build-Depends
+        sudo apt-get -qy build-dep .
+        # libudev-dev enables evdev light gun support (not yet in debian/control)
+        sudo apt-get -qy install ccache libudev-dev flex bison
+    - name: Build static libpcap
+      # Link libpcap statically so the binary runs on distros whose
+      # libpcap soname differs from Debian's libpcap.so.0.8 (e.g.
+      # Batocera ships libpcap.so.1). Built without dbus/libnl/usb so
+      # the static lib pulls in no extra dependencies. Installed to
+      # /usr/local, which pkg-config searches before the system dirs.
+      run: |
+        curl -sL https://www.tcpdump.org/release/libpcap-1.10.5.tar.gz | tar xz -C /tmp
+        cd /tmp/libpcap-1.10.5
+        ./configure --prefix=/usr/local --disable-shared --enable-static \
+          --disable-dbus --disable-bluetooth --disable-rdma --disable-usb \
+          --without-libnl
+        make -j$(nproc)
+        sudo make install
+    - name: Compile
+      run: |
+        export PATH="/usr/lib/ccache:$PATH"
+        ccache -z
+        ./build.sh ${{ matrix.configuration == 'debug' && '--debug' || '' }}
+        ccache -s
+    - name: Verify evdev light gun support is built in
+      run: |
+        nm build/qemu-system-i386 | grep -q xemu_input_evdev_gun_poll
+        echo "evdev light gun support: OK"
+    - name: Verify libpcap is linked statically
+      run: |
+        if ldd build/qemu-system-i386 | grep libpcap; then
+          echo "ERROR: binary still depends on shared libpcap" >&2
+          exit 1
+        fi
+        echo "no shared libpcap dependency: OK"
+        ldd build/qemu-system-i386
+    - name: Bundle shared libraries for portability
+      # Ship every non-glibc dependency in dist/lib and point the
+      # binary at it with a transitive rpath (DT_RPATH, hence
+      # --force-rpath), so the artifact runs on distros with different
+      # library sonames/versions (e.g. Batocera). glibc itself comes
+      # from the host system.
+      run: |
+        sudo apt-get -qy install patchelf
+        mkdir -p dist/lib
+        for lib in $(ldd build/qemu-system-i386 | awk '$3 ~ /^\// {print $3}'); do
+          case "$(basename "$lib")" in
+            libc.so.*|libm.so.*|libpthread.so.*|libdl.so.*|librt.so.*|libresolv.so.*|ld-linux*) continue ;;
+          esac
+          cp -n "$lib" dist/lib/
+        done
+        patchelf --force-rpath --set-rpath '$ORIGIN/lib' dist/xemu
+        echo "Bundled libraries:"
+        ls dist/lib
+    - name: Generate AppImage
+      env:
+        # Run linuxdeploy without FUSE (not set up on GitHub runners)
+        APPIMAGE_EXTRACT_AND_RUN: 1
+      run: |
+        wget -q https://github.com/linuxdeploy/linuxdeploy/releases/latest/download/linuxdeploy-x86_64.AppImage
+        chmod +x linuxdeploy-x86_64.AppImage
+
+        # Use the unpatched binary: linuxdeploy bundles libraries and
+        # sets rpaths itself
+        mkdir -p appdir/usr/bin
+        cp build/qemu-system-i386 appdir/usr/bin/xemu
+        install -DT xemu.metainfo.xml appdir/usr/share/metainfo/xemu.metainfo.xml
+
+        export VERSION=$(git describe --tags --match 'v*' 2>/dev/null || echo ${GITHUB_SHA::7})
+        ./linuxdeploy-x86_64.AppImage \
+          --appdir appdir \
+          -d ui/xemu.desktop \
+          -i ui/icons/xemu.svg \
+          --output appimage
+        mv xemu-*.AppImage dist/
+        ls -la dist/
+    - name: Upload build artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: xemu-ubuntu-24.04-${{ matrix.configuration }}
+        path: dist
+        if-no-files-found: error

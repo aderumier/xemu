@@ -588,14 +588,33 @@ void xemu_input_update_sdl_kbd_controller_state(ControllerState *state)
         if (gunBtn & EVDEV_GUN_BTN_RTRIGGER)
             state->lg.rtrig = 0xFF;
 
+        // Keyboard keys also feed the gun buttons (full set, so any Xbox
+        // button can be tested from the keyboard while an evdev gun
+        // supplies the aim).
         if (kbd[g_config.input.keyboard_controller_scancode_map.a])
             state->lg.buttons |= CONTROLLER_BUTTON_A;
         if (kbd[g_config.input.keyboard_controller_scancode_map.b])
             state->lg.buttons |= CONTROLLER_BUTTON_B;
+        if (kbd[g_config.input.keyboard_controller_scancode_map.x])
+            state->lg.buttons |= CONTROLLER_BUTTON_X;
+        if (kbd[g_config.input.keyboard_controller_scancode_map.y])
+            state->lg.buttons |= CONTROLLER_BUTTON_Y;
         if (kbd[g_config.input.keyboard_controller_scancode_map.start])
             state->lg.buttons |= CONTROLLER_BUTTON_START;
         if (kbd[g_config.input.keyboard_controller_scancode_map.back])
             state->lg.buttons |= CONTROLLER_BUTTON_BACK;
+        if (kbd[g_config.input.keyboard_controller_scancode_map.white])
+            state->lg.buttons |= CONTROLLER_BUTTON_WHITE;
+        if (kbd[g_config.input.keyboard_controller_scancode_map.black])
+            state->lg.buttons |= CONTROLLER_BUTTON_BLACK;
+        if (kbd[g_config.input.keyboard_controller_scancode_map.dpad_up])
+            state->lg.buttons |= CONTROLLER_BUTTON_DPAD_UP;
+        if (kbd[g_config.input.keyboard_controller_scancode_map.dpad_down])
+            state->lg.buttons |= CONTROLLER_BUTTON_DPAD_DOWN;
+        if (kbd[g_config.input.keyboard_controller_scancode_map.dpad_left])
+            state->lg.buttons |= CONTROLLER_BUTTON_DPAD_LEFT;
+        if (kbd[g_config.input.keyboard_controller_scancode_map.dpad_right])
+            state->lg.buttons |= CONTROLLER_BUTTON_DPAD_RIGHT;
         if (kbd[g_config.input.keyboard_controller_scancode_map.ltrigger])
             state->lg.ltrig = 0xFF;
         if (kbd[g_config.input.keyboard_controller_scancode_map.rtrigger])

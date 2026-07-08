@@ -612,6 +612,13 @@ static void gun_drain_node(EvdevGun *gun, int fd)
 
         switch (evt.type) {
         case EV_KEY: {
+            // TEMP diagnostic (grep 'evdev-gun-dbg'): log every button event
+            // the gun emits, to trace phantom D-pad presses seen while aiming.
+            if (evt.value != 2) {
+                const char *bn = btn_name_for_code(evt.code);
+                fprintf(stderr, "evdev-gun-dbg: key code=%d (%s) value=%d\n",
+                        evt.code, bn ? bn : "?", evt.value);
+            }
             if (evt.code == BTN_TOUCH) {
                 gun->touch = evt.value != 0;
                 gun->touch_seen = true;

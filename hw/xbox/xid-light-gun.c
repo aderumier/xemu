@@ -21,10 +21,25 @@
 
 #include "xid.h"
 
-#define USB_VENDOR_MICROSOFT 0x045e
+/*
+ * Enumerate as an EMS TopGun II lightgun (XID subtype 0x50). Some titles
+ * (e.g. Silent Scope Complete) only enable lightgun behaviour, such as
+ * the scope zoom, for a gun peripheral they recognise by USB VID/PID, so
+ * we present the TopGun II identity rather than a generic Microsoft one.
+ */
+#define USB_VENDOR_EMS 0x0b9a
+#define USB_PRODUCT_TOPGUN_II 0x016b
 
 #define LIGHT_GUN_IN_ENDPOINT_ID 0x02
 #define LIGHT_GUN_OUT_ENDPOINT_ID 0x02
+
+/* Dedicated string table: the shared desc_strings advertises a Microsoft
+ * Xbox Controller, which would contradict the TopGun II VID/PID. */
+static const USBDescStrings desc_strings_light_gun = {
+    [STR_MANUFACTURER] = "EMS Production",
+    [STR_PRODUCT]      = "TopGun II",
+    [STR_SERIALNUMBER] = "1",
+};
 
 #define USB_XID(obj) \
     OBJECT_CHECK(USBXIDLightGunState, (obj), TYPE_USB_XID_LIGHT_GUN)
@@ -101,15 +116,15 @@ static const USBDescDevice desc_device_xbox_light_gun = {
 
 static const USBDesc desc_xbox_light_gun = {
     .id = {
-        .idVendor          = USB_VENDOR_MICROSOFT,
-        .idProduct         = 0x0202,
-        .bcdDevice         = 0x0100,
+        .idVendor          = USB_VENDOR_EMS,
+        .idProduct         = USB_PRODUCT_TOPGUN_II,
+        .bcdDevice         = 0x0457,
         .iManufacturer     = STR_MANUFACTURER,
         .iProduct          = STR_PRODUCT,
         .iSerialNumber     = STR_SERIALNUMBER,
     },
     .full = &desc_device_xbox_light_gun,
-    .str  = desc_strings,
+    .str  = desc_strings_light_gun,
 };
 
 static const XIDDesc desc_xid_xbox_light_gun = {
@@ -405,7 +420,7 @@ static void usb_xbox_light_gun_class_initfn(ObjectClass *klass, const void *data
     DeviceClass *dc = DEVICE_CLASS(klass);
     USBDeviceClass *uc = USB_DEVICE_CLASS(klass);
 
-    uc->product_desc = "Microsoft Xbox Light Gun";
+    uc->product_desc = "EMS TopGun II Light Gun";
     uc->usb_desc = &desc_xbox_light_gun;
     uc->realize = usb_xbox_light_gun_realize;
     uc->unrealize = usb_xbox_gamepad_unrealize;
@@ -413,7 +428,7 @@ static void usb_xbox_light_gun_class_initfn(ObjectClass *klass, const void *data
     set_bit(DEVICE_CATEGORY_INPUT, dc->categories);
     dc->vmsd = &vmstate_usb_xbox;
     device_class_set_props(dc, xid_properties);
-    dc->desc = "Microsoft Xbox Light Gun";
+    dc->desc = "EMS TopGun II Light Gun";
 }
 
 static const TypeInfo usb_xbox_light_gun_info = {

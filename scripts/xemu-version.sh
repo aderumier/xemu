@@ -31,10 +31,20 @@ get_version_dot () {
   echo $(get_version_field 1) | cut -d. -f$1
 }
 
-XEMU_VERSION_MAJOR=$(get_version_dot 1)
-XEMU_VERSION_MINOR=$(get_version_dot 2)
-XEMU_VERSION_PATCH=$(get_version_dot 3)
-XEMU_VERSION_COMMIT=$(get_version_field 2)
+# The four FILEVERSION fields must be plain numbers; tags like
+# "v0.9-beta" would otherwise produce empty/alpha fields and break
+# the version.rc resource compile.
+sanitize_num() {
+  case "$1" in
+    ''|*[!0-9]*) echo 0 ;;
+    *) echo "$1" ;;
+  esac
+}
+
+XEMU_VERSION_MAJOR=$(sanitize_num "$(get_version_dot 1)")
+XEMU_VERSION_MINOR=$(sanitize_num "$(get_version_dot 2)")
+XEMU_VERSION_PATCH=$(sanitize_num "$(get_version_dot 3)")
+XEMU_VERSION_COMMIT=$(sanitize_num "$(get_version_field 2)")
 
 cat <<EOF
 #define XEMU_VERSION       "$XEMU_VERSION"

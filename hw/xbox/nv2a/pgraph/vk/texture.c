@@ -1396,6 +1396,17 @@ static bool check_textures_dirty(PGRAPHState *pg)
         if (!r->texture_bindings[i] || pg->texture_dirty[i]) {
             return true;
         }
+        /* possibly_dirty: now that redundant state re-sends no longer mark
+         * slots dirty (see the SET_TEXTURE_* handlers), content changes
+         * flagged by the memory access callbacks must force revalidation
+         * here or textures updated in RAM would go stale. Revalidate at
+         * most once per frame: dynamic RAM writes overlapping the watched
+         * ranges re-flag textures constantly, and rechecking content on
+         * every draw dominates CPU time in draw-call-heavy titles. */
+        if (r->texture_bindings[i]->possibly_dirty &&
+            r->texture_bindings[i]->validation_frame != pg->frame_time) {
+            return true;
+        }
     }
     return false;
 }
@@ -1428,30 +1439,61 @@ void pgraph_vk_bind_textures(NV2AState *d)
         return;
     }
 
+    /* Games commonly re-send identical texture state before every draw,
+     * which marks the slots dirty and used to flag the bindings as changed
+     * unconditionally. That forced a fresh descriptor set write and a
+     * pipeline-dirty pass per draw, dominating CPU time in draw-call-heavy
+     * titles. Rebind, but only report a change if the bound texture
+     * instance really differs. The node pointer alone is not enough (LRU
+     * nodes are recycled) and neither are the Vk handles (drivers recycle
+     * them too), so compare the per-creation sequence id as well. */
+    TextureBinding *old_bindings[NV2A_MAX_TEXTURES];
+    uint64_t old_seqs[NV2A_MAX_TEXTURES];
+    for (int i = 0; i < NV2A_MAX_TEXTURES; i++) {
+        old_bindings[i] = r->texture_bindings[i];
+        old_seqs[i] = r->texture_bindings[i] ? r->texture_bindings[i]->seq : 0;
+    }
+
     for (int i = 0; i < NV2A_MAX_TEXTURES; i++) {
         if (!pgraph_is_texture_enabled(pg, i)) {
             r->texture_bindings[i] = &r->dummy_texture;
+            /* Nothing to validate while disabled; leaving the flag set
+             * would force this whole loop (and create_texture for the
+             * enabled slots) to re-run on every draw. Re-enabling the
+             * slot flips the CONTROL0 enable bit, which marks it dirty
+             * again. */
+            pg->texture_dirty[i] = false;
             continue;
         }
 
         create_texture(pg, i);
+        r->texture_bindings[i]->validation_frame = pg->frame_time;
 
         pg->texture_dirty[i] = false; // FIXME: Move to renderer?
     }
 
-    r->texture_bindings_changed = true;
+    for (int i = 0; i < NV2A_MAX_TEXTURES; i++) {
+        if (r->texture_bindings[i] != old_bindings[i] ||
+            r->texture_bindings[i]->seq != old_seqs[i]) {
+            r->texture_bindings_changed = true;
+            break;
+        }
+    }
     update_timestamps(r);
     NV2A_VK_DGROUP_END();
 }
 
 static void texture_cache_entry_init(Lru *lru, LruNode *node, const void *state)
 {
+    PGRAPHVkState *r = container_of(lru, PGRAPHVkState, texture_cache);
     TextureBinding *snode = container_of(node, TextureBinding, node);
 
     snode->image = VK_NULL_HANDLE;
     snode->allocation = VK_NULL_HANDLE;
     snode->image_view = VK_NULL_HANDLE;
     snode->sampler = VK_NULL_HANDLE;
+    snode->seq = ++r->texture_binding_seq;
+    snode->validation_frame = (unsigned int)-1;
 }
 
 static void texture_cache_release_node_resources(PGRAPHVkState *r, TextureBinding *snode)

@@ -26,6 +26,7 @@
 
 #include <libudev.h>
 #include <linux/input.h>
+#include <ctype.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
@@ -474,14 +475,67 @@ static const char *resolve_devnode(const char *path, char *buf, size_t len)
     return path;
 }
 
+static bool scan_explicit_gun_paths(EvdevGun *gun, const char *paths)
+{
+    if (!paths || !paths[0]) {
+        return false;
+    }
+
+    bool opened_any = false;
+    char **nodes = g_strsplit(paths, ",", -1);
+    for (int n = 0; nodes[n]; n++) {
+        const char *path = g_strstrip(nodes[n]);
+        if (!path[0]) {
+            continue;
+        }
+        char buf[128];
+        if (gun_node_open(gun, resolve_devnode(path, buf, sizeof(buf)))) {
+            opened_any = true;
+        }
+    }
+    g_strfreev(nodes);
+    return opened_any;
+}
+
+static const char *evdevgun_binding_path(const char *guid,
+                                          char *buf, size_t len)
+{
+    const char prefix[] = "evdevgun:";
+    if (!guid || !guid[0] || strncmp(guid, prefix, sizeof(prefix) - 1) != 0) {
+        return NULL;
+    }
+
+    const char *start = guid + (sizeof(prefix) - 1);
+    while (*start && isspace((unsigned char)*start)) {
+        start++;
+    }
+    if (*start == '\0') {
+        return NULL;
+    }
+
+    const char *end = start + strlen(start);
+    while (end > start && isspace((unsigned char)*(end - 1))) {
+        end--;
+    }
+
+    size_t path_len = end - start;
+    if (path_len == 0 || path_len >= len) {
+        return NULL;
+    }
+
+    memcpy(buf, start, path_len);
+    buf[path_len] = '\0';
+    return buf;
+}
+
 /*
  * Open guns explicitly listed in the config
- * (input.lightgun.gunN_device). Each entry may be a comma-separated
- * list of event nodes merged into a single gun (aim and buttons split
- * across nodes). Returns true if at least one device was configured
- * (even if it failed to open), in which case udev auto-detection is
- * skipped: an explicit config fully describes the setup. Gun index
- * follows config order, skipping devices that fail to open.
+ * (input.lightgun.gunN_device) or bound via port bindings
+ * (input.bindings.portN = evdevgun:<path>). Each entry may be a
+ * comma-separated list of event nodes merged into a single gun.
+ * Returns true if at least one device was configured (even if it
+ * failed to open), in which case udev auto-detection is skipped.
+ * Gun index follows config order, skipping devices that fail to open.
  */
 static bool scan_config_devices(void)
 {
@@ -519,6 +573,35 @@ static bool scan_config_devices(void)
                     i + 1, paths[i]);
         }
     }
+
+    const char *binding_paths[4] = {
+        g_config.input.bindings.port1,
+        g_config.input.bindings.port2,
+        g_config.input.bindings.port3,
+        g_config.input.bindings.port4,
+    };
+
+    for (int i = 0; i < 4 && num_guns < MAX_GUNS; i++) {
+        const char *binding = binding_paths[i];
+        char buf[128];
+        const char *paths = evdevgun_binding_path(binding, buf, sizeof(buf));
+        if (!paths) {
+            continue;
+        }
+
+        any_configured = true;
+
+        EvdevGun *gun = &guns[num_guns];
+        memset(gun, 0, sizeof(*gun));
+
+        if (!scan_explicit_gun_paths(gun, paths) ||
+            !gun_finalize(gun, true)) {
+            fprintf(stderr,
+                    "evdev-gun: configured binding '%s' on port %d not usable\n",
+                    binding, i + 1);
+        }
+    }
+
     return any_configured;
 }
 

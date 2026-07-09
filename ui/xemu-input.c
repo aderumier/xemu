@@ -409,6 +409,17 @@ static void xemu_input_evdev_gun_create_devices(void)
             snprintf(buf, sizeof(buf), "Connected '%s' to port %d",
                      con->name, port + 1);
             xemu_queue_notification(buf);
+        } else if (g_config.input.auto_bind) {
+            for (port = 0; port < 4; port++) {
+                if (!xemu_input_get_bound(port)) {
+                    xemu_input_bind(port, con, 1);
+                    char buf[128];
+                    snprintf(buf, sizeof(buf), "Auto-bound '%s' to port %d",
+                             con->name, port + 1);
+                    xemu_queue_notification(buf);
+                    break;
+                }
+            }
         }
 
         QTAILQ_INSERT_TAIL(&available_controllers, con, entry);
@@ -879,6 +890,14 @@ void xemu_input_bind(int index, ControllerState *state, int save)
         if (state->bound >= 0) {
             // Device was already bound to another port. Unbind it.
             xemu_input_bind(state->bound, NULL, 1);
+        }
+
+        if (state->type == INPUT_DEVICE_EVDEV_GUN) {
+            const char *config_driver = *port_index_to_driver_settings_key_map[index];
+            if ((!config_driver || !*config_driver) &&
+                strcmp(bound_drivers[index], DRIVER_LIGHTGUN) != 0) {
+                bound_drivers[index] = DRIVER_LIGHTGUN;
+            }
         }
 
         bound_controllers[index] = state;

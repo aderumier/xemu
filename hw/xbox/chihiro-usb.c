@@ -996,33 +996,44 @@ static bool chihiro_backup_path(char *out, size_t out_len)
 /*
  * ic11 is a series of records, each laid out the same way:
  *
- *   +0x00  8-byte ASCII tag       ("ACBU0001", or "<game id>0000")
- *   +0x08  u16 record type/version
+ *   +0x00  8-byte ASCII tag   ("ACBU0001", or the game id, NUL padded)
+ *   +0x08  u16 entry count
  *   +0x0A  u16 checksum, little-endian: the sum of the data bytes
- *   +0x0C  data, to the end of the record
+ *   +0x0C  data, four bytes per entry
  *
- * The baseboard record sits at 0x00 and is mirrored at 0x40. The game's own
- * settings and bookkeeping follow at 0x80 — Ghost Squad tags that one
- * "SBHU0000" and spans 0x80..0xEF, reading it back in full at boot. (Both the
- * layout and the checksum are confirmed against real saves: the baseboard
- * copies verify on four titles, and the SBHU record verifies too.)
+ * So a record's length is derived from its own entry count, and it varies per
+ * game: the baseboard record holds 13 entries, Ollie King 3, Crazy Taxi 16,
+ * Ghost Squad 24. The baseboard record sits at 0x00 and is mirrored at 0x40;
+ * the game's own settings follow at 0x80. (Layout and checksum verified
+ * against real saves from all four titles.)
  *
  * A record that fails its own checksum — truncated on disk, or captured while
- * the game was partway through rewriting it — is what the game chokes on when
- * it reads its settings back. Refuse to restore such a backup and fall back to
- * the default dump, which always boots.
+ * the game was partway through rewriting it — is not worth restoring, so fall
+ * back to the default dump, which always boots.
  */
-#define CHIHIRO_IC11_TAG_LEN    8
-#define CHIHIRO_IC11_CKSUM_OFF  0x0A
-#define CHIHIRO_IC11_DATA_OFF   0x0C
+#define CHIHIRO_IC11_TAG_LEN     8
+#define CHIHIRO_IC11_COUNT_OFF   0x08
+#define CHIHIRO_IC11_CKSUM_OFF   0x0A
+#define CHIHIRO_IC11_DATA_OFF    0x0C
+#define CHIHIRO_IC11_ENTRY_SIZE  4
 
 #define CHIHIRO_IC11_BASEBOARD_TAG "ACBU0001"
 
-static bool chihiro_ic11_record_valid(const uint8_t *rec, size_t size)
+/* avail is how much room the record has before the end of ic11; a count that
+ * would run past it means the record is corrupt, not merely unrecognized. */
+static bool chihiro_ic11_record_valid(const uint8_t *rec, size_t avail)
 {
+    uint16_t count = rec[CHIHIRO_IC11_COUNT_OFF] |
+                     (rec[CHIHIRO_IC11_COUNT_OFF + 1] << 8);
+    size_t data_len = (size_t)count * CHIHIRO_IC11_ENTRY_SIZE;
+
+    if (CHIHIRO_IC11_DATA_OFF + data_len > avail) {
+        return false;
+    }
+
     uint16_t sum = 0;
-    for (size_t i = CHIHIRO_IC11_DATA_OFF; i < size; i++) {
-        sum += rec[i];
+    for (size_t i = 0; i < data_len; i++) {
+        sum += rec[CHIHIRO_IC11_DATA_OFF + i];
     }
 
     uint16_t stored = rec[CHIHIRO_IC11_CKSUM_OFF] |
@@ -1033,7 +1044,7 @@ static bool chihiro_ic11_record_valid(const uint8_t *rec, size_t size)
 /* The game record is tagged with the game's own id, so key off the tag being
  * printable rather than hardcoding one title. An all-zero slot just means the
  * game has not written its settings yet, which is fine. */
-static bool chihiro_ic11_game_record_valid(const uint8_t *rec, size_t size)
+static bool chihiro_ic11_game_record_valid(const uint8_t *rec, size_t avail)
 {
     bool empty = true;
 
@@ -1046,7 +1057,7 @@ static bool chihiro_ic11_game_record_valid(const uint8_t *rec, size_t size)
         }
     }
 
-    return empty || chihiro_ic11_record_valid(rec, size);
+    return empty || chihiro_ic11_record_valid(rec, avail);
 }
 
 /*
@@ -1066,7 +1077,8 @@ static bool chihiro_ic11_valid(const uint8_t *ic11)
     }
 
     /* Game settings record. */
-    return chihiro_ic11_game_record_valid(ic11 + 0x80, 0x70);
+    return chihiro_ic11_game_record_valid(ic11 + 0x80,
+                                          CHIHIRO_IC11_SIZE - 0x80);
 }
 
 static void chihiro_backup_load(uint8_t *ic11, size_t len)

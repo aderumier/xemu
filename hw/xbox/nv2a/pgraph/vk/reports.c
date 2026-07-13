@@ -153,7 +153,21 @@ void pgraph_vk_process_pending_reports(NV2AState *d)
     uint32_t *dma_get = &d->pfifo.regs[NV_PFIFO_CACHE1_DMA_GET];
     uint32_t *dma_put = &d->pfifo.regs[NV_PFIFO_CACHE1_DMA_PUT];
 
-    if (*dma_get == *dma_put && r->in_command_buffer) {
+    if (*dma_get != *dma_put) {
+        return;
+    }
+
+    if (r->in_command_buffer) {
+        /* Ends the command buffer, which writes the queued reports out. */
         pgraph_vk_finish(pg, VK_FINISH_REASON_STALLED);
+    } else if (!QSIMPLEQ_EMPTY(&r->report_queue)) {
+        /*
+         * A report can also be requested with no command buffer open — with no
+         * draw pending there is nothing to finish, so nothing would write it
+         * back, and a guest that spins on the notifier would spin forever
+         * (Sega Golf hangs on a black screen this way). The queue still has to
+         * be drained: the GL renderer does so unconditionally.
+         */
+        pgraph_vk_process_pending_reports_internal(d);
     }
 }

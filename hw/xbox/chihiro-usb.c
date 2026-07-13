@@ -473,6 +473,22 @@ static void handle_control(USBDevice *dev, USBPacket *p,
     data[2] = 0x52 | (s->jvs.sense & 0x03);  /* PINSB with current JVS sense */
     data[3] = 0x53;  /* OUTB register */
 
+    /*
+     * 0x1A/0x1B/0x22/0x23 drive the SC's two UARTs. The QC has none — it
+     * carries JVS over 0x19/0x20 instead, and implements only 0x16..0x1F plus
+     * 0x20/0x24/0x30 (matching MAME's ohci_hlean2131qc_device).
+     *
+     * Answering them on the QC is not harmless: 0x1B hands back the pending
+     * JVS response and clears it, so a game polling 0x1B alongside 0x19 (Sega
+     * Golf does, ~1500 times a boot) can have responses stolen from the path
+     * it is actually waiting on.
+     */
+    if (s->is_qc && (bRequest == 0x1A || bRequest == 0x1B ||
+                     bRequest == 0x22 || bRequest == 0x23)) {
+        p->actual_length = 0;
+        return;
+    }
+
     switch (bRequest) {
     case 0x16: /* Read ic10 EEPROM #1 — queue for bulk EP1 IN */
     {

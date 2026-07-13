@@ -110,21 +110,29 @@ static uint8_t chihiro_ic11[CHIHIRO_IC11_SIZE];
 /*
  * The AN2131's external memory, likewise one physical thing behind both chips.
  *
- * The upper half is the baseboard's backup RAM: battery-backed on real
- * hardware, and where the games actually keep their settings and bookkeeping.
- * Ghost Squad holds its state at 0x8000..0x83FF and Crazy Taxi at
- * 0x8400..0xB22B; neither ever touches an address below CHIHIRO_BRAM_BASE, so
- * only the upper half is persisted — the lower half is 8051 working memory
- * that has no business surviving a reboot.
- *
- * Without this, a game finds the region zeroed on every boot, concludes it has
- * never been configured, and drops the operator into the service menu — no
+ * This is the baseboard's backup RAM — battery-backed on real hardware, and
+ * where the games actually keep their settings and bookkeeping. Without it
+ * persisted, a game finds the region zeroed on every boot, concludes it has
+ * never been configured, and drops the operator into the service menu, no
  * matter what was saved in ic11.
+ *
+ * The whole 64KB is persisted, which is all the host can reach: 0x18 and 0x1F
+ * take a 16-bit address, so the xdata window is 64KB however large the part
+ * behind it is (the baseboard fits a 128K x8 SRAM, whose upper half would need
+ * a bank select nothing here — or in MAME — models). The observed games live
+ * in the upper half (Ghost Squad at 0x8000..0x83FF, Crazy Taxi at
+ * 0x8400..0xB22B), but saving only that half would be a guess about where each
+ * game keeps its data, and there is nothing to lose by saving all of it: no
+ * 8051 core runs here, so this array holds only what the host itself wrote.
  */
 static uint8_t chihiro_extmem[65536];
 
-#define CHIHIRO_BRAM_BASE 0x8000
+#define CHIHIRO_BRAM_BASE 0x0000
 #define CHIHIRO_BRAM_SIZE (sizeof(chihiro_extmem) - CHIHIRO_BRAM_BASE)
+
+/* Backups written before the window widened held only 0x8000..0xFFFF. */
+#define CHIHIRO_BRAM_LEGACY_BASE 0x8000
+#define CHIHIRO_BRAM_LEGACY_SIZE (sizeof(chihiro_extmem) - CHIHIRO_BRAM_LEGACY_BASE)
 
 static void chihiro_bram_init(void);
 static void chihiro_bram_mark_dirty(uint32_t addr);
@@ -1394,15 +1402,21 @@ static void chihiro_bram_init(void)
     if (!f) {
         return;
     }
-    size_t rd = fread(chihiro_extmem + CHIHIRO_BRAM_BASE, 1,
-                      CHIHIRO_BRAM_SIZE, f);
+
+    uint8_t buf[CHIHIRO_BRAM_SIZE];
+    size_t rd = fread(buf, 1, sizeof(buf), f);
     fclose(f);
 
-    if (rd != CHIHIRO_BRAM_SIZE) {
-        fprintf(stderr, "Chihiro: ignoring short backup RAM %s "
-                        "(%zu of %zu bytes) — using defaults\n",
-                path, rd, (size_t)CHIHIRO_BRAM_SIZE);
-        memset(chihiro_extmem + CHIHIRO_BRAM_BASE, 0, CHIHIRO_BRAM_SIZE);
+    /* A backup from before the window widened only covers the upper half; load
+     * it back where it came from rather than discarding the operator's
+     * settings. */
+    if (rd == CHIHIRO_BRAM_LEGACY_SIZE) {
+        memcpy(chihiro_extmem + CHIHIRO_BRAM_LEGACY_BASE, buf, rd);
+    } else if (rd == CHIHIRO_BRAM_SIZE) {
+        memcpy(chihiro_extmem + CHIHIRO_BRAM_BASE, buf, rd);
+    } else {
+        fprintf(stderr, "Chihiro: ignoring backup RAM %s of unexpected size "
+                        "(%zu bytes) — using defaults\n", path, rd);
         return;
     }
 

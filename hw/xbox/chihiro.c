@@ -2113,10 +2113,20 @@ void chihiro_on_quickreboot_signal(void)
     if (!chihiro_active) return;
 
     /* Ignore SCRATCH=0x04 during first kernel init — the kernel writes
-     * SCRATCH as part of normal boot before SEGABOOT even loads.
-     * Only react after SEGABOOT has been patched at least once. */
-    if (!chihiro_lpc_global || !chihiro_lpc_global->usb_poll_patched) {
-        if(0) printf("[%07lld] Chihiro: SCRATCH=0x04 ignored (SEGABOOT not yet patched)\n",
+     * SCRATCH as part of normal boot, before SEGABOOT even loads.
+     *
+     * This used to key off usb_poll_patched, which was a fair proxy for "the
+     * SEGABOOT image is in RAM" back when the scanner still had signatures to
+     * find. Every patch has since been removed, so the scanner now completes
+     * on its first run (~10ms) and the flag is true before SEGABOOT exists —
+     * the kernel's own write was being taken for a QuickReboot, resetting the
+     * mediaboard counters and arming quickreboot_pending during early init.
+     *
+     * Key off SEGABOOT actually talking to the mediaboard instead: it issues
+     * its first MbcomCommand (port 0x401E) about two seconds in, and cannot
+     * ask for a game launch before that. */
+    if (!chihiro_lpc_global || chihiro_lpc_global->lpc_401e_reads == 0) {
+        if(0) printf("[%07lld] Chihiro: SCRATCH=0x04 ignored (SEGABOOT not up yet)\n",
                TS_MS);
         return;
     }

@@ -59,9 +59,15 @@ typedef struct ChihiroUSBState {
     /* I2C EEPROM data (8KB): ic10 for QC, pc20 for SC — loaded at realize */
     uint8_t eeprom[8192];
 
-    /* Per-endpoint bulk IN buffers (EP1–EP5, index 0 unused) */
+    /* Per-endpoint bulk IN buffers (EP1–EP5, index 0 unused).
+     *
+     * Sized for the largest transfer a single vendor request can queue: a read
+     * of the AN2131's external memory (0x18), which spans the whole 64KB xdata
+     * space. Crazy Taxi asks for 11752 bytes of it in one go once it finds
+     * saved settings; a smaller buffer silently truncates the reply, the next
+     * bulk IN stalls, and the game blocks forever waiting for the rest. */
     #define CHIHIRO_USB_MAX_EP 6
-    #define CHIHIRO_USB_EP_BUFSZ 1024
+    #define CHIHIRO_USB_EP_BUFSZ 65536
     struct {
         uint8_t buf[CHIHIRO_USB_EP_BUFSZ];
         int pending;

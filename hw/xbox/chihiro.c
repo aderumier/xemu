@@ -2220,24 +2220,24 @@ bool chihiro_intercept_reset(void)
  *
  * TODO: Replace with proper PIC16 emulation running
  * sp5001.bin firmware for upstream LLE integration. */
-static void chihiro_dimm_event_timer_cb(void *opaque)
+/*
+ * Answer the mediaboard commands SEGABOOT has posted into its DMA slots.
+ *
+ * SEGABOOT's writes_3bc_3d4 sends STATUS commands this way and reads the
+ * replies back out of the slot metadata; the reply to STATUS is what sets the
+ * app_obj+0x3BC gate that releases the game launch. It stops reading port
+ * 0x40F0 after initial boot, so both the port handler and the DIMM event timer
+ * drive this scan — hence one function rather than two copies of it. Callers
+ * apply their own guards.
+ */
+static void chihiro_mbcom_scan_slots(ChihiroLPCState *s)
 {
-    perf_cnt_dimm_cb++;
-    ChihiroLPCState *s = CHIHIRO_LPC_DEVICE(opaque);
-
-    /* Periodic DMA slot scan — same logic as the port 0x40F0 handler.
-     * SEGABOOT's writes_3bc_3d4 sends STATUS commands via DMA slots,
-     * but stops reading port 0x40F0 after initial boot. Without this
-     * timer, those commands go unprocessed and app_obj+0x3BC is never
-     * set, blocking game launch when SERVICE button is released. */
-
     static const struct { uint32_t slot_va; uint32_t meta_va; uint32_t stride; }
         layouts[] = {
             { 0xAA7B0, 0xAA790, 0x60 },  /* fpr-21042 */
             { 0x89760, 0x89740, 0x40 },  /* fpr-23887 */
         };
 
-    int processed = 0;
     for (int layout = 0; layout < 2; layout++) {
         uint32_t slot_base_pa = chihiro_va_to_pa(layouts[layout].slot_va);
         if (slot_base_pa == 0xFFFFFFFF) continue;
@@ -2271,13 +2271,13 @@ static void chihiro_dimm_event_timer_cb(void *opaque)
             default:
                 /*
                  * A slot counts as ready as soon as its first byte is
-                 * non-zero, but the opcode lives two bytes further in: this
-                 * 50ms poll can land after SEGABOOT has written the one and
-                 * before it has written the other. Completing such a slot with
-                 * a zero response is worse than not answering — SEGABOOT reads
-                 * the reply, gets nothing where it expects a STATUS of
-                 * phase=5/100%, and never opens the app_obj+0x3BC gate that
-                 * releases the game launch, so it stays in its menu.
+                 * non-zero, but the opcode lives two bytes further in: a scan
+                 * can land after SEGABOOT has written the one and before it
+                 * has written the other. Completing such a slot with a zero
+                 * response is worse than not answering — SEGABOOT reads the
+                 * reply, gets nothing where it expects a STATUS of phase=5 and
+                 * 100%, and never opens the gate that releases the game launch,
+                 * so it sits in its menu instead.
                  *
                  * Leave the slot alone; the next scan sees the finished
                  * command. (Genuinely unknown opcodes stay unanswered too,
@@ -2295,13 +2295,17 @@ static void chihiro_dimm_event_timer_cb(void *opaque)
                 cpu_physical_memory_write(meta_pa + 4, "AAEE-01A00000001", 16);
             s->mbcom_e0_status |= 0x05;
             qemu_irq_raise(s->irq10);
-
-            if(0) printf("[%07lld] DIMM-SCAN: slot %d cmd=0x%04X resp=0x%08X\n",
-                   TS_MS, sl, cmd_opcode, resp_data);
-            processed++;
         }
         break;
     }
+}
+
+static void chihiro_dimm_event_timer_cb(void *opaque)
+{
+    perf_cnt_dimm_cb++;
+    ChihiroLPCState *s = CHIHIRO_LPC_DEVICE(opaque);
+
+    chihiro_mbcom_scan_slots(s);
 
     timer_mod(s->dimm_event_timer,
               qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 50);
@@ -2722,53 +2726,7 @@ static void chihiro_irq10_timer_cb(void *opaque)
     /* DMA META scan: provide mbcom slot responses to SEGABOOT */
     if (chihiro_mbcom_enabled && !chihiro_game_running
         && chihiro_lpc_global && chihiro_lpc_global->usb_poll_patched) {
-        static const struct { uint32_t slot_va; uint32_t meta_va; uint32_t stride; }
-            slot_layouts[] = {
-                { 0xAA7B0, 0xAA790, 0x60 },
-                { 0x89760, 0x89740, 0x40 },
-            };
-        for (int layout = 0; layout < 2; layout++) {
-            uint32_t slot_base_pa = chihiro_va_to_pa(slot_layouts[layout].slot_va);
-            if (slot_base_pa == 0xFFFFFFFF) continue;
-            uint32_t meta_base_pa = chihiro_va_to_pa(slot_layouts[layout].meta_va);
-            if (meta_base_pa == 0xFFFFFFFF) continue;
-            if (slot_base_pa >= 0x800000 || meta_base_pa >= 0x800000) continue;
-            uint32_t stride = slot_layouts[layout].stride;
-            for (int sl = 0; sl < 16; sl++) {
-                uint32_t data_pa = slot_base_pa + sl * stride;
-                uint32_t meta_pa = meta_base_pa + sl * stride;
-                if (data_pa + 4 >= 0x800000 || meta_pa + 12 >= 0x800000) continue;
-                uint8_t data_byte0;
-                uint16_t meta_marker;
-                cpu_physical_memory_read(data_pa, &data_byte0, 1);
-                cpu_physical_memory_read(meta_pa + 2, &meta_marker, 2);
-                if (data_byte0 == 0 || meta_marker != 0) continue;
-                uint16_t cmd_opcode = 0;
-                cpu_physical_memory_read(data_pa + 2, &cmd_opcode, 2);
-                uint32_t resp_data = 0, resp_data2 = 0;
-                switch (cmd_opcode) {
-                case 0x0001: resp_data = 0x40000000; break;
-                case 0x0100: resp_data = 5; resp_data2 = 100; break;
-                case 0x0101: resp_data = 0x0317; break;
-                case 0x0102: resp_data = 0x8002; break;
-                case 0x0103: resp_data = 0x6261632D; break;
-                default:
-                    /* Torn command — see chihiro_dimm_event_timer_cb(). Answering
-                     * it with zeroes closes the gate that releases the game. */
-                    continue;
-                }
-                meta_marker = 0x0001;
-                cpu_physical_memory_write(meta_pa + 2, &meta_marker, 2);
-                cpu_physical_memory_write(meta_pa + 4, &resp_data, 4);
-                if (cmd_opcode == 0x0100)
-                    cpu_physical_memory_write(meta_pa + 8, &resp_data2, 4);
-                if (cmd_opcode == 0x0103)  /* full 16-byte valid serial */
-                    cpu_physical_memory_write(meta_pa + 4, "AAEE-01A00000001", 16);
-                s->mbcom_e0_status |= 0x05;
-                qemu_irq_raise(s->irq10);
-            }
-            break;
-        }
+        chihiro_mbcom_scan_slots(s);
     }
 
     /* Kill timer once game is running — no more irq10 needed */

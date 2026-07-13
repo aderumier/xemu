@@ -944,37 +944,52 @@ static uint8_t chihiro_region_from_bootid(void)
  * read from boot.id (offset 0x30). Falls back to the baked-in default
  * dump when no backup exists yet.
  */
-/* Read the game ID from the game's boot.id (offset 0x30, alnum only);
- * writes "default" if unavailable. */
-static void chihiro_backup_game_id(char *game_id, size_t len)
+/*
+ * Read the game ID from the game's boot.id (offset 0x30, alnum only).
+ * Returns false when there is no usable boot.id.
+ *
+ * Not every dump ships one — Outrun 2 has none. There is no other identifier
+ * to hand that is reliably the game's own, so those titles simply do not get
+ * persistence: better no save than a save that another boot.id-less game will
+ * overwrite and then restore as its own backup RAM.
+ */
+static bool chihiro_backup_game_id(char *game_id, size_t len)
 {
     extern char chihiro_game_dir[1024];
-    snprintf(game_id, len, "default");
+
+    game_id[0] = '\0';
 
     if (!chihiro_game_dir[0]) {
-        return;
+        return false;
     }
+
     char bootid[1100];
     snprintf(bootid, sizeof(bootid), "%s/boot.id", chihiro_game_dir);
     FILE *f = fopen(bootid, "rb");
     if (!f) {
-        return;
+        return false;
     }
+
     uint8_t bid[0x40];
-    if (fread(bid, 1, sizeof(bid), f) == sizeof(bid) &&
-        memcmp(bid, "BTID", 4) == 0) {
-        int n = 0;
-        for (int i = 0; i < 8 && n < (int)len - 1; i++) {
-            uint8_t c = bid[0x30 + i];
-            if (g_ascii_isalnum(c)) {
-                game_id[n++] = c;
-            }
-        }
-        if (n > 0) {
-            game_id[n] = '\0';
+    bool ok = fread(bid, 1, sizeof(bid), f) == sizeof(bid) &&
+              memcmp(bid, "BTID", 4) == 0;
+    fclose(f);
+    if (!ok) {
+        return false;
+    }
+
+    int n = 0;
+    for (int i = 0; i < 8 && n < (int)len - 1; i++) {
+        uint8_t c = bid[0x30 + i];
+        if (g_ascii_isalnum(c)) {
+            game_id[n++] = c;
         }
     }
-    fclose(f);
+    if (n == 0) {
+        return false;
+    }
+    game_id[n] = '\0';
+    return true;
 }
 
 /*
@@ -985,6 +1000,14 @@ static void chihiro_backup_game_id(char *game_id, size_t len)
  */
 static bool chihiro_backup_enabled(void)
 {
+    char game_id[16];
+
+    /* No boot.id, no identity, no save — not even when the user opted in: the
+     * file could only be named for a game we cannot name. */
+    if (!chihiro_backup_game_id(game_id, sizeof(game_id))) {
+        return false;
+    }
+
     if (g_config.sys.chihiro_backup) {
         return true;
     }
@@ -995,8 +1018,6 @@ static bool chihiro_backup_enabled(void)
         "SBHF",  /* Ollie King */
         "SBHU",  /* Ghost Squad */
     };
-    char game_id[16];
-    chihiro_backup_game_id(game_id, sizeof(game_id));
     for (size_t i = 0; i < ARRAY_SIZE(known_good); i++) {
         if (strcmp(game_id, known_good[i]) == 0) {
             return true;
@@ -1008,7 +1029,10 @@ static bool chihiro_backup_enabled(void)
 static bool chihiro_backup_path_for(char *out, size_t out_len, const char *what)
 {
     char game_id[16];
-    chihiro_backup_game_id(game_id, sizeof(game_id));
+
+    if (!chihiro_backup_game_id(game_id, sizeof(game_id))) {
+        return false;
+    }
 
     /* Save alongside the EEPROM file (a proper saves directory, e.g.
      * /userdata/saves/chihiro on Batocera); fall back to xemu's data

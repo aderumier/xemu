@@ -25,13 +25,23 @@
 #include "qapi/error.h"
 
 #include "qemu/timer.h"
+#include "system/system.h"
 #include "ui/xemu-settings.h"
 #include "chihiro-firmware.h"
 #include "chihiro-jvs.h"
 #define TS_MS ((long long)(qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL)))
 
-static void chihiro_backup_load(uint8_t *ic11, size_t len);
-static void chihiro_backup_save(const uint8_t *ic11, size_t len);
+/*
+ * The baseboard has a single 24LC024 (ic11). Both AN2131 chips (QC and SC)
+ * reach the same physical part, so the contents must be shared state rather
+ * than a per-device copy — otherwise a write serviced by one chip is invisible
+ * to reads serviced by the other, and each chip flushes its own divergent copy
+ * over the backup file.
+ */
+#define CHIHIRO_IC11_SIZE 512
+
+static void chihiro_ic11_init(void);
+static void chihiro_ic11_mark_dirty(void);
 
 #define DEBUG_CUSB
 #ifdef DEBUG_CUSB
@@ -62,9 +72,6 @@ typedef struct ChihiroUSBState {
     uint32_t fw_bytes_written;  /* total bytes received via 0xA0 */
     bool fw_cpu_held;           /* true if CPUCS register set to hold CPU */
 
-    /* ic11 EEPROM (512 bytes) — baseboard config, "ACBU0001" + game ID */
-    uint8_t ic11[512];
-
     /* External memory (64KB, mapped at 0x0000–0xFFFF on the AN2131 8051) */
     uint8_t extmem[65536];
 
@@ -93,6 +100,9 @@ typedef struct ChihiroUSBState {
     /* JVS I/O board emulation state (shared between QC and SC paths) */
     ChihiroJVSState jvs;
 } ChihiroUSBState;
+
+/* The one baseboard ic11, shared by QC and SC. "ACBU0001" + game ID. */
+static uint8_t chihiro_ic11[CHIHIRO_IC11_SIZE];
 
 enum chihiro_usb_strings {
     STRING_SERIALNUMBER,
@@ -461,9 +471,9 @@ static void handle_control(USBDevice *dev, USBPacket *p,
         int addr = value;
         int count = index;
         if (count > CHIHIRO_USB_EP_BUFSZ) count = CHIHIRO_USB_EP_BUFSZ;
-        if (addr + count > 512) count = 512 - addr;
-        if (addr >= 0 && addr < 512 && count > 0) {
-            memcpy(s->ep_in[2].buf, s->ic11 + addr, count);
+        if (addr + count > CHIHIRO_IC11_SIZE) count = CHIHIRO_IC11_SIZE - addr;
+        if (addr >= 0 && addr < CHIHIRO_IC11_SIZE && count > 0) {
+            memcpy(s->ep_in[2].buf, chihiro_ic11 + addr, count);
         } else {
             memset(s->ep_in[2].buf, 0xFF, count);
             count = (count > 0) ? count : 0;
@@ -740,12 +750,17 @@ static void handle_data(USBDevice *dev, USBPacket *p)
             if (ep == 2) {
                 /* EP2 OUT: ic11 EEPROM write (from vendor 0x1E) */
                 uint16_t addr = s->write_1e_addr;
-                int copy = MIN(total, 512 - (int)addr);
+                int copy = MIN(total, CHIHIRO_IC11_SIZE - (int)addr);
                 if (copy > 0) {
-                    memcpy(s->ic11 + addr, buf, copy);
+                    memcpy(chihiro_ic11 + addr, buf, copy);
                     s->write_1e_addr += copy;
-                    /* Persist settings so they survive a reboot */
-                    chihiro_backup_save(s->ic11, sizeof(s->ic11));
+                    /* Games update ic11 as a sequence of small chunks (the
+                     * record at 0x00, then its mirror at 0x40). Persisting
+                     * each chunk as it lands can capture the EEPROM halfway
+                     * through that sequence, leaving the two copies out of
+                     * sync on disk — which hangs the next boot. Defer the
+                     * flush until the writes stop. */
+                    chihiro_ic11_mark_dirty();
                 }
             } else if (ep == 3) {
                 /* EP3 OUT: external memory write (from vendor 0x1F) */
@@ -971,6 +986,82 @@ static bool chihiro_backup_path(char *out, size_t out_len)
     return true;
 }
 
+/*
+ * ic11 is a series of records, each laid out the same way:
+ *
+ *   +0x00  8-byte ASCII tag       ("ACBU0001", or "<game id>0000")
+ *   +0x08  u16 record type/version
+ *   +0x0A  u16 checksum, little-endian: the sum of the data bytes
+ *   +0x0C  data, to the end of the record
+ *
+ * The baseboard record sits at 0x00 and is mirrored at 0x40. The game's own
+ * settings and bookkeeping follow at 0x80 — Ghost Squad tags that one
+ * "SBHU0000" and spans 0x80..0xEF, reading it back in full at boot. (Both the
+ * layout and the checksum are confirmed against real saves: the baseboard
+ * copies verify on four titles, and the SBHU record verifies too.)
+ *
+ * A record that fails its own checksum — truncated on disk, or captured while
+ * the game was partway through rewriting it — is what the game chokes on when
+ * it reads its settings back. Refuse to restore such a backup and fall back to
+ * the default dump, which always boots.
+ */
+#define CHIHIRO_IC11_TAG_LEN    8
+#define CHIHIRO_IC11_CKSUM_OFF  0x0A
+#define CHIHIRO_IC11_DATA_OFF   0x0C
+
+#define CHIHIRO_IC11_BASEBOARD_TAG "ACBU0001"
+
+static bool chihiro_ic11_record_valid(const uint8_t *rec, size_t size)
+{
+    uint16_t sum = 0;
+    for (size_t i = CHIHIRO_IC11_DATA_OFF; i < size; i++) {
+        sum += rec[i];
+    }
+
+    uint16_t stored = rec[CHIHIRO_IC11_CKSUM_OFF] |
+                      (rec[CHIHIRO_IC11_CKSUM_OFF + 1] << 8);
+    return sum == stored;
+}
+
+/* The game record is tagged with the game's own id, so key off the tag being
+ * printable rather than hardcoding one title. An all-zero slot just means the
+ * game has not written its settings yet, which is fine. */
+static bool chihiro_ic11_game_record_valid(const uint8_t *rec, size_t size)
+{
+    bool empty = true;
+
+    for (size_t i = 0; i < CHIHIRO_IC11_TAG_LEN; i++) {
+        if (rec[i] != 0) {
+            empty = false;
+        }
+        if (rec[i] != 0 && !g_ascii_isalnum(rec[i])) {
+            return false;
+        }
+    }
+
+    return empty || chihiro_ic11_record_valid(rec, size);
+}
+
+/*
+ * Every record must check out. In particular a valid baseboard header paired
+ * with a half-written game record is exactly the inconsistency that sends the
+ * game into its error path on the next boot.
+ */
+static bool chihiro_ic11_valid(const uint8_t *ic11)
+{
+    /* Baseboard record and its mirror. */
+    for (int off = 0x00; off <= 0x40; off += 0x40) {
+        if (memcmp(ic11 + off, CHIHIRO_IC11_BASEBOARD_TAG,
+                   CHIHIRO_IC11_TAG_LEN) != 0 ||
+            !chihiro_ic11_record_valid(ic11 + off, 0x40)) {
+            return false;
+        }
+    }
+
+    /* Game settings record. */
+    return chihiro_ic11_game_record_valid(ic11 + 0x80, 0x70);
+}
+
 static void chihiro_backup_load(uint8_t *ic11, size_t len)
 {
     if (!chihiro_backup_enabled()) {
@@ -984,8 +1075,19 @@ static void chihiro_backup_load(uint8_t *ic11, size_t len)
     if (!f) {
         return;
     }
-    size_t rd = fread(ic11, 1, len, f);
+
+    uint8_t buf[CHIHIRO_IC11_SIZE] = { 0 };
+    size_t rd = fread(buf, 1, sizeof(buf), f);
     fclose(f);
+
+    if (rd != len || !chihiro_ic11_valid(buf)) {
+        fprintf(stderr, "Chihiro: ignoring damaged backup memory %s "
+                        "(%zu of %zu bytes, header %s) — using defaults\n",
+                path, rd, len, chihiro_ic11_valid(buf) ? "ok" : "bad");
+        return;
+    }
+
+    memcpy(ic11, buf, len);
     printf("[%07lld] Chihiro: loaded backup memory (%zu bytes) from %s\n",
            TS_MS, rd, path);
 }
@@ -999,14 +1101,116 @@ static void chihiro_backup_save(const uint8_t *ic11, size_t len)
     if (!chihiro_backup_path(path, sizeof(path))) {
         return;
     }
-    FILE *f = fopen(path, "wb");
+
+    /* Write a temporary alongside the target and rename over it, so an exit
+     * mid-write leaves the previous good backup in place instead of a
+     * truncated file that the next boot would try to restore. */
+    char tmp[1024 + 8];
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+
+    FILE *f = fopen(tmp, "wb");
     if (!f) {
         fprintf(stderr, "Chihiro: cannot write backup memory to %s: %s\n",
-                path, strerror(errno));
+                tmp, strerror(errno));
         return;
     }
-    fwrite(ic11, 1, len, f);
+    bool ok = fwrite(ic11, 1, len, f) == len;
+    ok = (fflush(f) == 0) && ok;
+    if (ok) {
+        qemu_fdatasync(fileno(f));
+    }
     fclose(f);
+
+    if (!ok) {
+        fprintf(stderr, "Chihiro: backup memory write to %s failed: %s\n",
+                tmp, strerror(errno));
+        unlink(tmp);
+        return;
+    }
+
+#ifdef _WIN32
+    /* rename() will not replace an existing file on Windows. */
+    unlink(path);
+#endif
+    if (rename(tmp, path) != 0) {
+        fprintf(stderr, "Chihiro: cannot commit backup memory to %s: %s\n",
+                path, strerror(errno));
+        unlink(tmp);
+    }
+}
+
+/*
+ * Deferred flush: a game rewrites ic11 as several small EP2 chunks, and only
+ * the state after the last one is consistent. Coalesce the writes and flush
+ * once they have been quiet for a moment, plus unconditionally on exit.
+ */
+#define CHIHIRO_IC11_FLUSH_DELAY_MS 500
+
+static QEMUTimer *chihiro_ic11_flush_timer;
+static bool chihiro_ic11_dirty;
+
+static void chihiro_ic11_flush(void)
+{
+    if (!chihiro_ic11_dirty) {
+        return;
+    }
+
+    /* Still mid-rewrite (or the game left it inconsistent): keep the previous
+     * good backup and stay dirty, so the next write or exit retries. */
+    if (!chihiro_ic11_valid(chihiro_ic11)) {
+        return;
+    }
+
+    chihiro_ic11_dirty = false;
+    chihiro_backup_save(chihiro_ic11, sizeof(chihiro_ic11));
+}
+
+static void chihiro_ic11_flush_cb(void *opaque)
+{
+    chihiro_ic11_flush();
+}
+
+static void chihiro_ic11_exit_notify(Notifier *n, void *opaque)
+{
+    chihiro_ic11_flush();
+}
+
+static Notifier chihiro_ic11_exit_notifier = {
+    .notify = chihiro_ic11_exit_notify,
+};
+
+static void chihiro_ic11_mark_dirty(void)
+{
+    chihiro_ic11_dirty = true;
+    if (chihiro_ic11_flush_timer) {
+        timer_mod(chihiro_ic11_flush_timer,
+                  qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+                      CHIHIRO_IC11_FLUSH_DELAY_MS);
+    }
+}
+
+/* Initialize the single shared ic11: default dump, then the persisted backup
+ * on top if one exists. Both AN2131 realize paths call this; only the first
+ * does the work. */
+static void chihiro_ic11_init(void)
+{
+    static bool initialized;
+
+    if (initialized) {
+        return;
+    }
+    initialized = true;
+
+    _Static_assert(sizeof(hotd3_ic11_24lc024) == 128,
+                   "ic11 EEPROM dump must be exactly 128 bytes");
+    memset(chihiro_ic11, 0, sizeof(chihiro_ic11));
+    memcpy(chihiro_ic11, hotd3_ic11_24lc024, sizeof(hotd3_ic11_24lc024));
+
+    chihiro_backup_load(chihiro_ic11, sizeof(chihiro_ic11));
+
+    chihiro_ic11_flush_timer =
+        timer_new_ms(QEMU_CLOCK_VIRTUAL, chihiro_ic11_flush_cb, NULL);
+    qemu_add_exit_notifier(&chihiro_ic11_exit_notifier);
 }
 
 static void chihiro_an2131qc_realize(USBDevice *dev, Error **errp)
@@ -1030,13 +1234,8 @@ static void chihiro_an2131qc_realize(USBDevice *dev, Error **errp)
     /* Initialize per-endpoint bulk transfer state */
     memset(s->ep_in, 0, sizeof(s->ep_in));
 
-    /* Load ic11 baseboard EEPROM (256 bytes, 24LC024) — first 128 from dump, rest zero */
-    _Static_assert(sizeof(hotd3_ic11_24lc024) == 128,
-                   "ic11 EEPROM dump must be exactly 128 bytes");
-    memset(s->ic11, 0, sizeof(s->ic11));
-    memcpy(s->ic11, hotd3_ic11_24lc024, sizeof(hotd3_ic11_24lc024));
-    /* Overlay persisted settings if a backup exists for this game */
-    chihiro_backup_load(s->ic11, sizeof(s->ic11));
+    /* Baseboard EEPROM: shared with the SC, initialized by whichever comes first */
+    chihiro_ic11_init();
     memset(s->extmem, 0, sizeof(s->extmem));
     s->write_1e_addr = 0;
     s->write_1f_addr = 0;
@@ -1105,11 +1304,8 @@ static void chihiro_an2131sc_realize(USBDevice *dev, Error **errp)
     /* Initialize per-endpoint bulk transfer state */
     memset(s->ep_in, 0, sizeof(s->ep_in));
 
-    /* Load ic11 baseboard EEPROM (256 bytes, 24LC024) */
-    memset(s->ic11, 0, sizeof(s->ic11));
-    memcpy(s->ic11, hotd3_ic11_24lc024, sizeof(hotd3_ic11_24lc024));
-    /* Overlay persisted settings if a backup exists for this game */
-    chihiro_backup_load(s->ic11, sizeof(s->ic11));
+    /* Baseboard EEPROM: shared with the QC, initialized by whichever comes first */
+    chihiro_ic11_init();
     memset(s->extmem, 0, sizeof(s->extmem));
     s->write_1e_addr = 0;
     s->write_1f_addr = 0;

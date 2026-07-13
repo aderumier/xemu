@@ -2268,7 +2268,22 @@ static void chihiro_dimm_event_timer_cb(void *opaque)
             case 0x0101: resp_data = 0x0317; break;
             case 0x0102: resp_data = 0x8002; break;
             case 0x0103: resp_data = 0x6261632D; break;
-            default: break;
+            default:
+                /*
+                 * A slot counts as ready as soon as its first byte is
+                 * non-zero, but the opcode lives two bytes further in: this
+                 * 50ms poll can land after SEGABOOT has written the one and
+                 * before it has written the other. Completing such a slot with
+                 * a zero response is worse than not answering — SEGABOOT reads
+                 * the reply, gets nothing where it expects a STATUS of
+                 * phase=5/100%, and never opens the app_obj+0x3BC gate that
+                 * releases the game launch, so it stays in its menu.
+                 *
+                 * Leave the slot alone; the next scan sees the finished
+                 * command. (Genuinely unknown opcodes stay unanswered too,
+                 * which is what the DIMM board would do with them anyway.)
+                 */
+                continue;
             }
 
             meta_marker = 0x0001;
@@ -2737,7 +2752,10 @@ static void chihiro_irq10_timer_cb(void *opaque)
                 case 0x0101: resp_data = 0x0317; break;
                 case 0x0102: resp_data = 0x8002; break;
                 case 0x0103: resp_data = 0x6261632D; break;
-                default: resp_data = 0; break;
+                default:
+                    /* Torn command — see chihiro_dimm_event_timer_cb(). Answering
+                     * it with zeroes closes the gate that releases the game. */
+                    continue;
                 }
                 meta_marker = 0x0001;
                 cpu_physical_memory_write(meta_pa + 2, &meta_marker, 2);

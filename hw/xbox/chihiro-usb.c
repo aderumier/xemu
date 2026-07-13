@@ -948,6 +948,7 @@ static bool chihiro_backup_enabled(void)
         "SBFN",  /* House of the Dead 3 */
         "SBFY",  /* Crazy Taxi */
         "SBFZ",  /* Virtua Cop 3 */
+        "SBHF",  /* Ollie King */
         "SBHU",  /* Ghost Squad */
     };
     char game_id[16];

@@ -78,9 +78,6 @@ typedef struct ChihiroUSBState {
     uint32_t fw_bytes_written;  /* total bytes received via 0xA0 */
     bool fw_cpu_held;           /* true if CPUCS register set to hold CPU */
 
-    /* External memory (64KB, mapped at 0x0000–0xFFFF on the AN2131 8051) */
-    uint8_t extmem[65536];
-
     /* Pending write tracking for 0x1E (ic11 via EP2) and 0x1F (extmem via EP3) */
     uint16_t write_1e_addr;
     uint16_t write_1f_addr;
@@ -109,6 +106,28 @@ typedef struct ChihiroUSBState {
 
 /* The one baseboard ic11, shared by QC and SC. "ACBU0001" + game ID. */
 static uint8_t chihiro_ic11[CHIHIRO_IC11_SIZE];
+
+/*
+ * The AN2131's external memory, likewise one physical thing behind both chips.
+ *
+ * The upper half is the baseboard's backup RAM: battery-backed on real
+ * hardware, and where the games actually keep their settings and bookkeeping.
+ * Ghost Squad holds its state at 0x8000..0x83FF and Crazy Taxi at
+ * 0x8400..0xB22B; neither ever touches an address below CHIHIRO_BRAM_BASE, so
+ * only the upper half is persisted — the lower half is 8051 working memory
+ * that has no business surviving a reboot.
+ *
+ * Without this, a game finds the region zeroed on every boot, concludes it has
+ * never been configured, and drops the operator into the service menu — no
+ * matter what was saved in ic11.
+ */
+static uint8_t chihiro_extmem[65536];
+
+#define CHIHIRO_BRAM_BASE 0x8000
+#define CHIHIRO_BRAM_SIZE (sizeof(chihiro_extmem) - CHIHIRO_BRAM_BASE)
+
+static void chihiro_bram_init(void);
+static void chihiro_bram_mark_dirty(uint32_t addr);
 
 enum chihiro_usb_strings {
     STRING_SERIALNUMBER,
@@ -600,7 +619,7 @@ static void handle_control(USBDevice *dev, USBPacket *p,
         int addr = value;
         if (addr + count > 65536) count = 65536 - addr;
         if (addr >= 0 && count > 0) {
-            memcpy(s->ep_in[3].buf, s->extmem + addr, count);
+            memcpy(s->ep_in[3].buf, chihiro_extmem + addr, count);
         } else {
             memset(s->ep_in[3].buf, 0, count > 0 ? count : 0);
         }
@@ -771,10 +790,11 @@ static void handle_data(USBDevice *dev, USBPacket *p)
             } else if (ep == 3) {
                 /* EP3 OUT: external memory write (from vendor 0x1F) */
                 uint16_t addr = s->write_1f_addr;
-                int copy = MIN(total, 65536 - (int)addr);
+                int copy = MIN(total, (int)sizeof(chihiro_extmem) - (int)addr);
                 if (copy > 0) {
-                    memcpy(s->extmem + addr, buf, copy);
+                    memcpy(chihiro_extmem + addr, buf, copy);
                     s->write_1f_addr += copy;
+                    chihiro_bram_mark_dirty(addr);
                 }
             } else if (ep == 4) {
                 /* EP4 OUT: JVS data with 3-byte AN2131QC header */
@@ -961,7 +981,7 @@ static bool chihiro_backup_enabled(void)
     return false;
 }
 
-static bool chihiro_backup_path(char *out, size_t out_len)
+static bool chihiro_backup_path_for(char *out, size_t out_len, const char *what)
 {
     char game_id[16];
     chihiro_backup_game_id(game_id, sizeof(game_id));
@@ -980,8 +1000,8 @@ static bool chihiro_backup_path(char *out, size_t out_len)
 #endif
         if (slash) {
             int dir_len = (int)(slash - eeprom) + 1;
-            snprintf(out, out_len, "%.*schihiro_%s_backup.bin",
-                     dir_len, eeprom, game_id);
+            snprintf(out, out_len, "%.*schihiro_%s_%s.bin",
+                     dir_len, eeprom, game_id, what);
             return true;
         }
     }
@@ -990,8 +1010,13 @@ static bool chihiro_backup_path(char *out, size_t out_len)
     if (!base) {
         return false;
     }
-    snprintf(out, out_len, "%schihiro_%s_backup.bin", base, game_id);
+    snprintf(out, out_len, "%schihiro_%s_%s.bin", base, game_id, what);
     return true;
+}
+
+static bool chihiro_backup_path(char *out, size_t out_len)
+{
+    return chihiro_backup_path_for(out, out_len, "backup");
 }
 
 /*
@@ -1233,6 +1258,142 @@ static void chihiro_ic11_init(void)
     qemu_add_exit_notifier(&chihiro_ic11_exit_notifier);
 }
 
+/*
+ * Backup RAM persistence, same shape as ic11's: coalesce writes, flush once
+ * they go quiet and on exit, and commit via a temp file and rename.
+ *
+ * Unlike ic11 there is nothing to validate — the layout is the game's own and
+ * it checksums the region itself, re-initializing it when the contents do not
+ * add up. So restore it verbatim, and only insist that the file is the size we
+ * wrote.
+ */
+static QEMUTimer *chihiro_bram_flush_timer;
+static bool chihiro_bram_dirty;
+
+static void chihiro_bram_save(void)
+{
+    if (!chihiro_backup_enabled()) {
+        return;
+    }
+    char path[1024];
+    if (!chihiro_backup_path_for(path, sizeof(path), "bram")) {
+        return;
+    }
+
+    char tmp[1024 + 8];
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+
+    FILE *f = fopen(tmp, "wb");
+    if (!f) {
+        fprintf(stderr, "Chihiro: cannot write backup RAM to %s: %s\n",
+                tmp, strerror(errno));
+        return;
+    }
+    bool ok = fwrite(chihiro_extmem + CHIHIRO_BRAM_BASE, 1,
+                     CHIHIRO_BRAM_SIZE, f) == CHIHIRO_BRAM_SIZE;
+    ok = (fflush(f) == 0) && ok;
+    if (ok) {
+        qemu_fdatasync(fileno(f));
+    }
+    fclose(f);
+
+    if (!ok) {
+        fprintf(stderr, "Chihiro: backup RAM write to %s failed: %s\n",
+                tmp, strerror(errno));
+        unlink(tmp);
+        return;
+    }
+
+#ifdef _WIN32
+    unlink(path);
+#endif
+    if (rename(tmp, path) != 0) {
+        fprintf(stderr, "Chihiro: cannot commit backup RAM to %s: %s\n",
+                path, strerror(errno));
+        unlink(tmp);
+    }
+}
+
+static void chihiro_bram_flush(void)
+{
+    if (!chihiro_bram_dirty) {
+        return;
+    }
+    chihiro_bram_dirty = false;
+    chihiro_bram_save();
+}
+
+static void chihiro_bram_flush_cb(void *opaque)
+{
+    chihiro_bram_flush();
+}
+
+static void chihiro_bram_exit_notify(Notifier *n, void *opaque)
+{
+    chihiro_bram_flush();
+}
+
+static Notifier chihiro_bram_exit_notifier = {
+    .notify = chihiro_bram_exit_notify,
+};
+
+/* Only writes into the battery-backed half are worth persisting. */
+static void chihiro_bram_mark_dirty(uint32_t addr)
+{
+    if (addr < CHIHIRO_BRAM_BASE) {
+        return;
+    }
+
+    chihiro_bram_dirty = true;
+    if (chihiro_bram_flush_timer) {
+        timer_mod(chihiro_bram_flush_timer,
+                  qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+                      CHIHIRO_IC11_FLUSH_DELAY_MS);
+    }
+}
+
+static void chihiro_bram_init(void)
+{
+    static bool initialized;
+
+    if (initialized) {
+        return;
+    }
+    initialized = true;
+
+    memset(chihiro_extmem, 0, sizeof(chihiro_extmem));
+
+    chihiro_bram_flush_timer =
+        timer_new_ms(QEMU_CLOCK_VIRTUAL, chihiro_bram_flush_cb, NULL);
+    qemu_add_exit_notifier(&chihiro_bram_exit_notifier);
+
+    if (!chihiro_backup_enabled()) {
+        return;
+    }
+    char path[1024];
+    if (!chihiro_backup_path_for(path, sizeof(path), "bram")) {
+        return;
+    }
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        return;
+    }
+    size_t rd = fread(chihiro_extmem + CHIHIRO_BRAM_BASE, 1,
+                      CHIHIRO_BRAM_SIZE, f);
+    fclose(f);
+
+    if (rd != CHIHIRO_BRAM_SIZE) {
+        fprintf(stderr, "Chihiro: ignoring short backup RAM %s "
+                        "(%zu of %zu bytes) — using defaults\n",
+                path, rd, (size_t)CHIHIRO_BRAM_SIZE);
+        memset(chihiro_extmem + CHIHIRO_BRAM_BASE, 0, CHIHIRO_BRAM_SIZE);
+        return;
+    }
+
+    printf("[%07lld] Chihiro: loaded backup RAM (%zu bytes) from %s\n",
+           TS_MS, rd, path);
+}
+
 static void chihiro_an2131qc_realize(USBDevice *dev, Error **errp)
 {
     ChihiroUSBState *s = (ChihiroUSBState *)dev;
@@ -1256,7 +1417,7 @@ static void chihiro_an2131qc_realize(USBDevice *dev, Error **errp)
 
     /* Baseboard EEPROM: shared with the SC, initialized by whichever comes first */
     chihiro_ic11_init();
-    memset(s->extmem, 0, sizeof(s->extmem));
+    chihiro_bram_init();
     s->write_1e_addr = 0;
     s->write_1f_addr = 0;
 
@@ -1326,7 +1487,7 @@ static void chihiro_an2131sc_realize(USBDevice *dev, Error **errp)
 
     /* Baseboard EEPROM: shared with the QC, initialized by whichever comes first */
     chihiro_ic11_init();
-    memset(s->extmem, 0, sizeof(s->extmem));
+    chihiro_bram_init();
     s->write_1e_addr = 0;
     s->write_1f_addr = 0;
 

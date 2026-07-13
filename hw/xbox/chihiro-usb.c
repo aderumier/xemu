@@ -934,10 +934,10 @@ static void chihiro_backup_game_id(char *game_id, size_t len)
 }
 
 /*
- * Whether to persist this game's backup memory. Off by default because
- * some games (e.g. Crazy Taxi) hang when restoring a saved backup;
- * enabled either explicitly via sys.chihiro_backup, or automatically for
- * the titles known to restore cleanly.
+ * Whether to persist this game's backup memory. Off unless the title has been
+ * checked to survive a save/restore cycle; enabled explicitly via
+ * sys.chihiro_backup, or automatically for the titles known to restore
+ * cleanly.
  */
 static bool chihiro_backup_enabled(void)
 {
@@ -946,6 +946,7 @@ static bool chihiro_backup_enabled(void)
     }
     static const char *const known_good[] = {
         "SBFN",  /* House of the Dead 3 */
+        "SBFY",  /* Crazy Taxi */
         "SBFZ",  /* Virtua Cop 3 */
         "SBHU",  /* Ghost Squad */
     };
